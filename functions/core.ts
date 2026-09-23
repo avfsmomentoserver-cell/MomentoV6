@@ -40,6 +40,7 @@ import {
 } from "./fx";
 import {
   WINDOWS,
+  bandLabelOfShort,
   expectedRounds,
   nextRoundForecast,
   perRoundProbability,
@@ -307,6 +308,26 @@ export class MomentoCore extends DurableObject {
         hit_rate REAL NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_acc_hist ON accuracy_history (window, threshold, ts);
+      CREATE TABLE IF NOT EXISTS round_calibrations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source TEXT NOT NULL DEFAULT 'all',
+        state TEXT NOT NULL,
+        expected REAL NOT NULL,
+        range_lo REAL NOT NULL,
+        range_hi REAL NOT NULL,
+        reach REAL NOT NULL,
+        tail_lift REAL NOT NULL,
+        correction REAL NOT NULL DEFAULT 0,
+        dist TEXT,
+        actual REAL,
+        verdict TEXT,
+        reason TEXT,
+        band_err INTEGER,
+        log_err REAL,
+        created_ms INTEGER NOT NULL,
+        resolved_ms INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_round_cal ON round_calibrations (resolved_ms, created_ms);
     `);
   }
 
@@ -380,6 +401,13 @@ export class MomentoCore extends DurableObject {
     // start accumulating even before the dashboard is opened.
     if (!(await this.ctx.storage.getAlarm())) {
       await this.ctx.storage.setAlarm(Date.now() + 20_000);
+    }
+    // Next-round calibration: backtest the trailing rounds so the rectification
+    // correction is informed from the first live forecast.
+    try {
+      this.calibrateNewRounds([]);
+    } catch (e) {
+      console.error("calibration bootstrap failed", e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -568,6 +596,7 @@ export class MomentoCore extends DurableObject {
     );
     this.invalidateCaches();
     if (sorted.length > 0 && sorted.length <= 200) this.extendSessions(source, sorted);
+    if (inserted > 0) this.calibrateNewRounds();
     return { inserted, rejected };
   }
 
@@ -882,6 +911,125 @@ export class MomentoCore extends DurableObject {
       console.error("accuracy alarm tick failed", e instanceof Error ? e.message : String(e));
     }
     await this.scheduleAccuracyAlarm();
+  }
+
+  // ------------------------------------------------- next-round calibration
+  //
+  // The rectification loop: every recorded round is scored against the
+  // band-model next-round forecast that existed BEFORE it landed (stored at
+  // ingest). Scoring is loose by design — off-by-one band counts as a hit and
+  // the range is checked with padding — so reasonable misses in the targets /
+  // next-few-rounds ETAs don't trigger overfitting. Accumulated log-bias over
+  // the trailing window becomes a bounded correction factor applied to the
+  // live next-round point estimate (rectification).
+
+  private calibrationConfig(): { enabled: boolean; window: number; minSample: number } {
+    return {
+      enabled: this.setting("calibration_enabled") !== "0",
+      window: clampInt(this.setting("calibration_window") ?? "30", 10, 200, 30),
+      minSample: 15,
+    };
+  }
+
+  /** Current rectification correction (log-bias of expected vs actual). */
+  private bandCorrection(): { value: number; sampleSize: number } {
+    const cfg = this.calibrationConfig();
+    const sql = this.ctx.storage.sql;
+    const corrRow = sql.exec("SELECT correction FROM round_calibrations WHERE id = -1").toArray()[0] as { correction: number | null } | undefined;
+    const nRow = sql.exec("SELECT COUNT(*) AS n FROM round_calibrations WHERE id <> -1 AND resolved_ms IS NOT NULL").toArray()[0] as { n: number };
+    const v = corrRow?.correction ?? 0;
+    const n = nRow?.n ?? 0;
+    return n >= cfg.minSample ? { value: v, sampleSize: n } : { value: 0, sampleSize: n };
+  }
+
+  /** Score one forecast against the actual next-round multiplier (loose). */
+  private scoreRoundForecast(
+    expected: number,
+    rangeLo: number,
+    rangeHi: number,
+    actual: number,
+    state: string,
+    tailLift: number,
+  ): { verdict: string; bandErr: number; logErr: number; reason: string } {
+    const bandErr = bandIndex(actual) - bandIndex(expected);
+    const logErr = Math.log(Math.max(1, actual)) - Math.log(Math.max(1, expected));
+    const inRange = actual >= rangeLo && actual <= rangeHi;
+    const looseRange = actual >= rangeLo / 1.5 && actual <= rangeHi * 1.5;
+    let verdict: string;
+    let reason: string;
+    if (inRange && Math.abs(bandErr) <= 1) {
+      verdict = "hit";
+      reason = `Actual settled inside the p25–p75 range in ${bandErr === 0 ? "the" : "an adjacent"} projected band — ${state} projection held.`;
+    } else if (Math.abs(bandErr) <= 1 && looseRange) {
+      verdict = "adjacent";
+      reason = `Off by one band (${bandLabelOfShort(bandIndex(expected))} → ${bandLabelOfShort(bandIndex(actual))}) and inside the padded range — direction correct.`;
+    } else if (bandErr > 1) {
+      verdict = "miss-high";
+      reason = `Actual landed ${bandErr} bands ABOVE the projected ${bandLabelOfShort(bandIndex(expected))} — the tail was hotter than tail-lift ${tailLift.toFixed(2)} implied under ${state}. The lift is too timid for this regime.`;
+    } else if (bandErr < -1) {
+      verdict = "miss-low";
+      reason = `Actual landed ${-bandErr} bands BELOW the projected ${bandLabelOfShort(bandIndex(expected))} — the base bands held weight the model gave to the tail; ${state} over-weighted moonshot bands.`;
+    } else {
+      verdict = "near";
+      reason = `Just outside the central range in a neighbouring band — the band split was right, the range edges were tight.`;
+    }
+    return { verdict, bandErr, logErr, reason };
+  }
+
+  /**
+   * Score each target round against the band-model next-round forecast that
+   * existed BEFORE it landed (history strictly prior, with the correction
+   * accumulated up to that point — online rectification). First run backtests
+   * the trailing rounds so the loop starts informed.
+   */
+  private calibrateNewRounds(): number {
+    const cfg = this.calibrationConfig();
+    if (!cfg.enabled) return 0;
+    const sql = this.ctx.storage.sql;
+    const all = this.roundsFor(null);
+    const existing = (sql.exec("SELECT COUNT(*) AS n, MAX(created_ms) AS last FROM round_calibrations WHERE id <> -1").toArray()[0] as { n: number; last: number | null });
+    const targets = existing.n
+      ? all.filter((x) => x.tsMs > (existing.last ?? 0))
+      : all.slice(-120);
+    let scored = 0;
+    for (const r of targets) {
+      const history = all.filter((x) => x.tsMs < r.tsMs);
+      if (history.length < 100) continue;
+      const corr = this.bandCorrection();
+      // score the raw (uncorrected) band model — drift is measured against it
+      const f = nextRoundForecast(history, "all", this.weightsMap());
+      const s = this.scoreRoundForecast(f.expectedMultiplier, f.rangeLo, f.rangeHi, r.multiplier, f.state, f.tailLift);
+      sql.exec(
+        `INSERT INTO round_calibrations (source, state, expected, range_lo, range_hi, reach, tail_lift, correction, dist, actual, verdict, reason, band_err, log_err, created_ms, resolved_ms)
+         VALUES ('all', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        f.state, f.expectedMultiplier, f.rangeLo, f.rangeHi, f.moonshotReach, f.tailLift, corr.value,
+        JSON.stringify(f.distribution), r.multiplier, s.verdict, s.reason, s.bandErr, +s.logErr.toFixed(5),
+        r.tsMs, r.tsMs,
+      );
+      scored++;
+    }
+    if (scored) {
+      this.updateBandCorrection();
+      console.log(`[momento-v6] calibration: ${scored} rounds scored (${existing.n ? "incremental" : "backtest"})`);
+    }
+    return scored;
+  }
+
+  /** Recompute the bounded log-bias correction over the trailing window. */
+  private updateBandCorrection(): void {
+    const cfg = this.calibrationConfig();
+    const rows = this.ctx.storage.sql
+      .exec("SELECT log_err FROM round_calibrations WHERE id <> -1 AND resolved_ms IS NOT NULL ORDER BY created_ms DESC LIMIT ?", cfg.window)
+      .toArray() as Rows[];
+    const n = rows.length;
+    const mean = n ? rows.reduce((a, r) => a + (r.log_err as number), 0) / n : 0;
+    const value = Math.max(-1.5, Math.min(1.5, mean));
+    this.ctx.storage.sql.exec(
+      `INSERT INTO round_calibrations (id, source, state, expected, range_lo, range_hi, reach, tail_lift, correction, dist, actual, verdict, reason, band_err, log_err, created_ms, resolved_ms)
+       VALUES (-1, 'all', 'state', 0, 0, 0, 0, 0, ?, NULL, NULL, 'state', ?, 0, 0, 0, 0)
+       ON CONFLICT(id) DO UPDATE SET correction = excluded.correction, reason = excluded.reason`,
+      +value.toFixed(5), `rectification state · n=${n} over trailing ${cfg.window} · bias ${Math.round(value * 100)}%`,
+    );
   }
 
   // ------------------------------------------------------------------- router
@@ -1650,7 +1798,25 @@ export class MomentoCore extends DurableObject {
     if (path === "/api/v1/pipeline/next-round" && method === "GET") {
       const source = q.get("source");
       const rounds = this.roundsFor(source);
-      return ok(nextRoundForecast(rounds, source ?? "all", this.weightsMap()));
+      const corr = this.bandCorrection();
+      return ok(nextRoundForecast(rounds, source ?? "all", this.weightsMap(), corr.value || undefined, corr.sampleSize));
+    }
+    if (path === "/api/v1/pipeline/calibrations" && method === "GET") {
+      const rows = (this.ctx.storage.sql
+        .exec("SELECT * FROM round_calibrations WHERE id <> -1 ORDER BY created_ms DESC LIMIT ?", clampInt(q.get("limit") ?? "50", 1, 200, 50))
+        .toArray() as Rows[]).map((r) => ({ ...r, dist: r.dist ? JSON.parse(r.dist as string) : null }));
+      const state = (this.ctx.storage.sql
+        .exec("SELECT correction, reason FROM round_calibrations WHERE id = -1")
+        .toArray()[0] as { correction: number | null; reason: string | null } | undefined) ?? {};
+      const verdicts = new Map<string, number>();
+      for (const r of rows) verdicts.set(r.verdict as string, (verdicts.get(r.verdict as string) ?? 0) + 1);
+      return ok({
+        rows,
+        verdicts: Object.fromEntries(verdicts),
+        correction: state.correction ?? 0,
+        correctionNote: state.reason ?? "not yet computed",
+        backtestDone: this.setting("calibration_backtest_done") === "1",
+      });
     }
 
     // ---- momentum & structure lab (v6.2)

@@ -3,12 +3,29 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { BrainCircuit, Loader2, RefreshCw } from "lucide-react";
 import { api, qs } from "@/lib/api";
-import { fmtInt, fmtPct } from "@/lib/format";
-import type { Analysis, ForecastAccuracy, ForecastDto } from "@/lib/types";
+import { fmtDateTime, fmtInt, fmtMult, fmtPct } from "@/lib/format";
+import type { Analysis, CalibrationSummary, ForecastAccuracy, ForecastDto } from "@/lib/types";
 import { Loading, MetricGrid, PageHeader, Panel, StatTile } from "@/components/bits";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
+
+const VERDICT_TONE: Record<string, string> = {
+  hit: "text-emerald-400",
+  adjacent: "text-cyan-300",
+  near: "text-amber-300",
+  "miss-high": "text-rose-300",
+  "miss-low": "text-orange-300",
+};
+
+const VERDICT_CHIP: Record<string, string> = {
+  hit: "border-emerald-400/40 bg-emerald-400/10 text-emerald-300",
+  adjacent: "border-cyan-400/40 bg-cyan-400/10 text-cyan-300",
+  near: "border-amber-400/40 bg-amber-400/10 text-amber-300",
+  "miss-high": "border-rose-400/40 bg-rose-400/10 text-rose-300",
+  "miss-low": "border-orange-400/40 bg-orange-400/10 text-orange-300",
+};
 
 export default function ForecastStudio() {
   const qc = useQueryClient();
@@ -29,6 +46,11 @@ export default function ForecastStudio() {
     queryKey: ["forecasts", "open"],
     queryFn: () => api.get<{ forecasts: ForecastDto[] }>("/api/v1/forecasts?status=open&limit=20"),
     refetchInterval: 10_000,
+  });
+  const calibration = useQuery({
+    queryKey: ["pipeline", "calibrations", "studio"],
+    queryFn: () => api.get<CalibrationSummary>("/api/v1/pipeline/calibrations?limit=12"),
+    refetchInterval: 15_000,
   });
 
   const record = useMutation({
@@ -112,6 +134,78 @@ export default function ForecastStudio() {
           </div>
         </Panel>
       </div>
+
+      <Panel
+        title="Next-round calibration — forecast vs actual measurement"
+        right={
+          calibration.data ? (
+            <span className="text-[11px] text-muted-foreground">
+              rectification{" "}
+              <span className="font-data text-foreground">
+                {calibration.data.correction >= 0 ? "+" : ""}
+                {Math.round(calibration.data.correction * 100)}%
+              </span>{" "}
+              · scored {Object.values(calibration.data.verdicts).reduce((a, b) => a + b, 0)}+ rounds
+            </span>
+          ) : undefined
+        }
+      >
+        {calibration.data ? (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {["hit", "adjacent", "near", "miss-high", "miss-low"].map((v) => (
+                <div key={v} className="rounded-lg border border-border/60 bg-background/40 px-3 py-2">
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{v}</p>
+                  <p className={cn("font-data mt-0.5 text-lg font-semibold", VERDICT_TONE[v])}>{calibration.data!.verdicts[v] ?? 0}</p>
+                </div>
+              ))}
+            </div>
+            <p className="rounded-md border border-violet-400/25 bg-violet-400/[0.06] px-3 py-2 text-[12px] leading-relaxed text-muted-foreground">
+              {calibration.data.correctionNote}
+              <span className="mt-1 block text-[11px] text-muted-foreground/70">
+                Loose scoring by design: a one-band slip inside the padded range counts as adjacent, not a miss — the correction only
+                fires on sustained log-bias across the trailing window, so reasonable misses in targets and near-round ETAs don't
+                overfit the model.
+              </span>
+            </p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-[12px]">
+                <thead>
+                  <tr className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                    <th className="py-1 pr-3 font-medium">time</th>
+                    <th className="py-1 pr-3 font-medium">state</th>
+                    <th className="py-1 pr-3 font-medium">expected</th>
+                    <th className="py-1 pr-3 font-medium">range</th>
+                    <th className="py-1 pr-3 font-medium">actual</th>
+                    <th className="py-1 pr-3 font-medium">verdict</th>
+                    <th className="py-1 font-medium">why</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {calibration.data.rows.map((r) => (
+                    <tr key={r.id} className="border-t border-border/50 align-top">
+                      <td className="py-1.5 pr-3 font-data whitespace-nowrap text-muted-foreground">{fmtDateTime(r.created_ms)}</td>
+                      <td className="py-1.5 pr-3">{r.state}</td>
+                      <td className="py-1.5 pr-3 font-data">{fmtMult(r.expected)}</td>
+                      <td className="py-1.5 pr-3 font-data whitespace-nowrap text-muted-foreground">{fmtMult(r.range_lo)}–{fmtMult(r.range_hi)}</td>
+                      <td className="py-1.5 pr-3 font-data font-semibold">{r.actual != null ? fmtMult(r.actual) : "—"}</td>
+                      <td className="py-1.5 pr-3">
+                        <span className={cn("rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider", VERDICT_CHIP[r.verdict] ?? "border-border text-muted-foreground")}>
+                          {r.verdict}
+                        </span>
+                      </td>
+                      <td className="py-1.5 text-[11.5px] leading-snug text-muted-foreground">{r.reason}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {!calibration.data.rows.length && <p className="py-3 text-[12px] text-muted-foreground">No rounds scored yet — ingest a few rounds and the loop backtests automatically.</p>}
+            </div>
+          </div>
+        ) : (
+          <Loading rows={3} />
+        )}
+      </Panel>
 
       <Panel title="Per-model accuracy">
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">

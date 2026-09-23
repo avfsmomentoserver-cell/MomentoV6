@@ -452,11 +452,40 @@ export interface NextRoundForecast {
   rangeHi: number;
   band: string;
   distribution: { label: string; edge: number; probability: number; representative: number }[];
+  baseMultiplier: number;
   tailLift: number;
   moonshotReach: number;
+  rectification: { active: boolean; factor: number; biasPct: number; sampleSize: number; note: string } | null;
   lastRound: { multiplier: number; band: string };
   components: (ProbabilityComponent & { mid: number })[];
   note: string;
+}
+
+export interface RoundCalibration {
+  id: number;
+  state: string;
+  expected: number;
+  range_lo: number;
+  range_hi: number;
+  reach: number;
+  tail_lift: number;
+  correction: number;
+  dist: { label: string; edge: number; probability: number; representative: number }[] | null;
+  actual: number | null;
+  verdict: string;
+  reason: string;
+  band_err: number;
+  log_err: number;
+  created_ms: number;
+  resolved_ms: number | null;
+}
+
+export interface CalibrationSummary {
+  rows: RoundCalibration[];
+  verdicts: Record<string, number>;
+  correction: number;
+  correctionNote: string;
+  backtestDone: boolean;
 }
 
 // ---- v6: accuracy engine v2 ------------------------------------------------

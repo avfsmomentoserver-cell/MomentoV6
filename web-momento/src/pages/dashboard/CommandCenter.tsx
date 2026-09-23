@@ -208,6 +208,14 @@ export default function CommandCenter() {
                     </span>
                     <span className="rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-[11px] text-muted-foreground">{nr.band} band</span>
                     <span className="rounded-md border border-primary/40 bg-primary/10 px-2.5 py-1 text-[11px] text-primary">h+1</span>
+                    {nr.rectification?.active && (
+                      <span
+                        title={nr.rectification.note}
+                        className="inline-flex items-center gap-1 rounded-md border border-violet-400/40 bg-violet-400/10 px-2.5 py-1 text-[11px] text-violet-300"
+                      >
+                        rectified {nr.rectification.factor.toFixed(2)}×
+                      </span>
+                    )}
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
@@ -218,7 +226,7 @@ export default function CommandCenter() {
                     <div>
                       <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Range · p25–p75</p>
                       <p className="font-data mt-0.5 text-sm tabular-nums">{fmtMult(nr.rangeLo)} — {fmtMult(nr.rangeHi)}</p>
-                      <p className="mt-0.5 text-[10px] text-muted-foreground">moonshot reach ~{fmtMult(nr.moonshotReach)}</p>
+                      <p className="mt-0.5 text-[10px] text-muted-foreground">moonshot reach (p90) ~{fmtMult(nr.moonshotReach)}</p>
                     </div>
                   </div>
                   <div>

@@ -257,8 +257,10 @@ export interface NextRoundForecast {
   rangeHi: number;
   band: string;
   distribution: NextRoundBand[];
+  baseMultiplier: number;
   tailLift: number;
   moonshotReach: number;
+  rectification: { active: boolean; factor: number; biasPct: number; sampleSize: number; note: string } | null;
   lastRound: { multiplier: number; band: string };
   components: NextRoundBlend[];
   note: string;
@@ -270,10 +272,18 @@ function bandLabelOf(m: number): string {
   return BAND_LABELS[i];
 }
 
+/** Short band label from a band index, for prose ("2-5", "10-100", "100+"). */
+export function bandLabelOfShort(index: number): string {
+  const i = Math.max(0, Math.min(BAND_LABELS.length - 1, index));
+  return BAND_LABELS[i].replace("x", "");
+}
+
 export function nextRoundForecast(
   rounds: Round[],
   source: string,
   weights: Record<string, number>,
+  priorCorrection?: number,
+  rectificationSample?: number,
 ): NextRoundForecast {
   const n = rounds.length;
   const lastM = rounds[n - 1]?.multiplier ?? 1;
@@ -340,8 +350,6 @@ export function nextRoundForecast(
     hi[3] / hiSum * pAbove,
   ].map((p) => r5(p));
   const reps = [0, 1, 2, 3, 4, 5].map(rep);
-  const expected = bandP.reduce((a, p, i) => a + p * reps[i], 0);
-
   // Quantiles of the band partition -> tight central range + moonshot reach.
   const quantile = (q: number): number => {
     let c = 0;
@@ -355,16 +363,34 @@ export function nextRoundForecast(
     }
     return reps[5] * 2;
   };
-  const rangeLo = Math.max(1, quantile(0.25));
-  const rangeHi = Math.max(rangeLo, quantile(0.75));
-  const moonshotReach = quantile(0.85);
+  // base = distribution mean (kept as the raw-model reference for calibration);
+  // point estimate = median (p50) of the band partition: a mean over this
+  // distribution is dominated by the rare 100x+ band and reads as over-hype.
+  const expectedRaw = bandP.reduce((a, p, i) => a + p * reps[i], 0);
+  // rectification: shrink/expand the point estimate toward the observed log-bias
+  // (only when the sample is big enough to trust the drift estimate).
+  const correctionFactor = priorCorrection ? clamp(Math.exp(priorCorrection), 0.5, 2) : 1;
+  const expected = Math.max(1, quantile(0.5) * correctionFactor);
+  const rangeLo = Math.max(1, quantile(0.25) * (0.6 + 0.4 * correctionFactor));
+  const rangeHi = Math.max(rangeLo, quantile(0.75) * (0.8 + 0.2 * correctionFactor));
+  // p90 — the multiplier the tail is expected to touch when the moonshot bands land.
+  const moonshotReach = quantile(0.9);
 
-  // per-model standalone multipliers from the same band model
+  // per-model standalone multipliers from the same band model (median, like the ensemble)
   const midFor = (p2: number): number => {
     const below = 1 - p2;
     const above = p2;
     const mass = [condBelow[0] * below, condBelow[1] * below, hi[0] / hiSum * above, hi[1] / hiSum * above, hi[2] / hiSum * above, hi[3] / hiSum * above];
-    return Math.max(1, mass.reduce((a, m, i) => a + m * reps[i], 0));
+    let c = 0;
+    for (let i = 0; i < 6; i++) {
+      c += mass[i];
+      if (c >= 0.5) {
+        const lo = edges[i];
+        const hiE = edges[i + 1] === Infinity ? reps[i] * 2 : edges[i + 1];
+        return Math.max(1, Math.sqrt(lo * hiE));
+      }
+    }
+    return Math.max(1, reps[5] * 2);
   };
   const components: NextRoundBlend[] = per.components.map((c) => ({ ...c, mid: +midFor(c.p).toFixed(2) }));
 
@@ -402,8 +428,22 @@ export function nextRoundForecast(
       probability: p,
       representative: +reps[i].toFixed(2),
     })),
+    // pre-rectification model output — the calibration loop scores this to
+    // measure raw drift, while the live expected/range carry the correction.
+    baseMultiplier: +expectedRaw.toFixed(2),
     tailLift: r4(tailLift),
     moonshotReach: +moonshotReach.toFixed(2),
+    rectification: priorCorrection
+      ? {
+          active: Math.abs(priorCorrection) >= 0.05,
+          factor: r4(correctionFactor),
+          biasPct: r4(priorCorrection),
+          sampleSize: rectificationSample ?? 0,
+          note: priorCorrection > 0
+            ? `Model ran ${Math.round(priorCorrection * 100)}% low across ${rectificationSample ?? 0} verified rounds — point estimate scaled up ${correctionFactor.toFixed(2)}x (rectified).`
+            : `Model ran ${Math.round(-priorCorrection * 100)}% high across ${rectificationSample ?? 0} verified rounds — point estimate scaled down ${correctionFactor.toFixed(2)}x (rectified).`,
+        }
+      : null,
     lastRound: { multiplier: lastM, band: bandLabelOf(lastM) },
     components,
     note: `${stateNotes[state]} Last round settled ${lastM.toFixed(2)}x in the ${bandLabelOf(lastM)} band, ${streakPart}.${tailPart}`,
