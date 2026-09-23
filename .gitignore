@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build / bundler output
+dist/
+build/
+*.tsbuildinfo
+.local-bundle.mjs
+.local-core.mjs
+
+# Local dev data (SQLite, WAL)
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Cloudflare / wrangler local state
+.wrangler/
+.dev/
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+
+# Misc
+.DS_Store
+*.log
+npm-debug.log*

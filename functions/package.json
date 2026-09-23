@@ -1,0 +1,18 @@
+{
+  "name": "rork-functions",
+  "version": "6.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node local-dev.mjs",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.136.1"
+  },
+  "dependencies": {
+    "sql.js": "^1.14.2"
+  }
+}
