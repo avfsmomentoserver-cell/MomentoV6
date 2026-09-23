@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
-import { Activity, ArrowUpRight, Gauge, Package, Play, RefreshCw, Square, Telescope, Zap } from "lucide-react";
+import { Activity, ArrowUpRight, Gauge, Play, RefreshCw, Square, Telescope, Zap } from "lucide-react";
 import { api, qs } from "@/lib/api";
 import { fmtInt, fmtMult, fmtPct, timeAgo } from "@/lib/format";
 import type { AccuracyOverview, Analysis, NextRoundForecast, PipelineForecast, Pressure, RoundDto } from "@/lib/types";
@@ -71,14 +71,6 @@ export default function CommandCenter() {
     queryKey: ["mega", "pressure", "cc"],
     queryFn: () => api.get<Pressure>("/api/v1/mega-pressure"),
     refetchInterval: liveMode ? 15_000 : 30_000,
-  });
-  const bundleStats = useQuery({
-    queryKey: ["bundle", "stats"],
-    queryFn: () =>
-      fetch("/downloads/bundle-stats.json")
-        .then((r) => r.json() as Promise<{ files: number; sizeMb: number; version: string }>)
-        .catch(() => null),
-    staleTime: 60_000,
   });
 
   const stepFeed = useMutation({
@@ -221,10 +213,32 @@ export default function CommandCenter() {
                     <div>
                       <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Expected</p>
                       <p className="font-data mt-0.5 text-xl font-semibold tabular-nums text-primary">{fmtMult(nr.expectedMultiplier)}</p>
+                      <p className="mt-0.5 text-[10px] text-muted-foreground">{nr.band} band</p>
                     </div>
                     <div>
-                      <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Range</p>
+                      <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Range · p25–p75</p>
                       <p className="font-data mt-0.5 text-sm tabular-nums">{fmtMult(nr.rangeLo)} — {fmtMult(nr.rangeHi)}</p>
+                      <p className="mt-0.5 text-[10px] text-muted-foreground">moonshot reach ~{fmtMult(nr.moonshotReach)}</p>
+                    </div>
+                  </div>
+                  <div>
+                    <p className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">Next-round distribution by band</p>
+                    <div className="flex items-end gap-1" style={{ height: 44 }}>
+                      {nr.distribution.map((d) => (
+                        <div key={d.label} className="flex min-w-0 flex-1 flex-col items-center gap-0.5" title={`${d.label}: ${fmtPct(d.probability, 1)}`}>
+                          <div className="flex w-full flex-1 items-end">
+                            <div
+                              className="w-full rounded-t-sm"
+                              style={{
+                                height: `${Math.max(3, d.probability * 100)}%`,
+                                background: d.edge >= 10 ? "#F59E0B" : d.edge >= 5 ? "#8B5CF6" : d.edge >= 2 ? "#06B6D4" : "#3B82F6",
+                                opacity: 0.4 + Math.min(0.6, d.probability * 6),
+                              }}
+                            />
+                          </div>
+                          <span className="font-data text-[9px] text-muted-foreground">{d.label.replace("x", "")}</span>
+                        </div>
+                      ))}
                     </div>
                   </div>
                   <p className="text-[11px] leading-relaxed text-muted-foreground">{nr.note}</p>
@@ -257,25 +271,23 @@ export default function CommandCenter() {
           </CardContent>
         </Card>
 
-        <Panel
-          title="Source bundle & step docs — the full platform, zipped"
-          className="border-primary/30 bg-primary/[0.04]"
-          right={<Package className="h-4 w-4 text-primary" />}
-        >
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="min-w-0">
-              <p className="text-[14px] font-semibold">momento-platform-{bundleStats.data?.version ?? "6.2.0"}.zip</p>
-              <p className="mt-0.5 text-[12.5px] leading-relaxed text-muted-foreground">
-                Complete runnable source + per-step build documentation, refreshed on every build and served from the platform's own downloads folder.
-                {bundleStats.data && ` ${fmtInt(bundleStats.data.files)} files · ${bundleStats.data.sizeMb} MB.`}
-              </p>
-            </div>
-            <DownloadSourceButton />
-          </div>
-          <div className="mt-3 flex flex-wrap gap-4 text-[12px]">
-            <Link to="/dashboard/downloads" className="text-primary hover:underline">Downloads & release history →</Link>
-            <Link to="/dashboard/build-steps" className="text-primary hover:underline">Build steps →</Link>
-            <Link to="/dashboard/docs/source-bundle" className="text-primary hover:underline">Bundle documentation →</Link>
+        <Panel title="Latest rounds" right={<Link to="/dashboard/market" className="text-[11px] text-primary hover:underline">Market →</Link>}>
+          <div className="flex h-[188px] flex-col gap-1.5 overflow-y-auto pr-1">
+            {(latest.data?.rounds ?? []).map((r, i) => (
+              <div
+                key={r.id}
+                className={cn(
+                  "flex shrink-0 items-center justify-between rounded-md border px-2 py-1",
+                  i === 0 ? "border-primary/40 bg-primary/5" : "border-border/60 bg-background/40",
+                )}
+              >
+                <span className="font-data text-[12px] font-semibold" style={{ color: r.multiplier >= 100 ? "#F43F5E" : r.multiplier >= 10 ? "#F59E0B" : r.multiplier >= 2 ? "#8B5CF6" : "#3B82F6" }}>
+                  {r.multiplier.toFixed(2)}×
+                </span>
+                <span className="text-[10.5px] text-muted-foreground">{r.source ?? "—"} · {timeAgo(r.ts)}</span>
+              </div>
+            ))}
+            {!latest.data && <p className="py-4 text-center text-[12px] text-muted-foreground">—</p>}
           </div>
         </Panel>
 
@@ -392,20 +404,6 @@ export default function CommandCenter() {
       </div>
 
       <div className="grid gap-3 xl:grid-cols-3">
-        <Panel title="Latest rounds" right={<Link to="/dashboard/market" className="text-[11px] text-primary hover:underline">Market →</Link>}>
-          <div className="flex flex-wrap gap-1.5">
-            {latest.data?.rounds.map((r) => (
-              <span
-                key={r.id}
-                className="font-data rounded-md border border-border bg-background/40 px-2 py-1 text-[11px]"
-                style={{ color: r.multiplier >= 100 ? "#F43F5E" : r.multiplier >= 10 ? "#F59E0B" : r.multiplier >= 2 ? "#8B5CF6" : "#3B82F6" }}
-              >
-                {r.multiplier.toFixed(2)}
-              </span>
-            ))}
-          </div>
-        </Panel>
-
         <Panel title="Engine status">
           <div className="space-y-2 text-[13px]">
             <div className="flex items-center justify-between">

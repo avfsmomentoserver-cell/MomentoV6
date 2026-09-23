@@ -451,8 +451,11 @@ export interface NextRoundForecast {
   rangeLo: number;
   rangeHi: number;
   band: string;
+  distribution: { label: string; edge: number; probability: number; representative: number }[];
+  tailLift: number;
+  moonshotReach: number;
   lastRound: { multiplier: number; band: string };
-  components: ProbabilityComponent[];
+  components: (ProbabilityComponent & { mid: number })[];
   note: string;
 }
 

@@ -7,7 +7,7 @@
 // score every model against history in non-overlapping window blocks — O(n)
 // per threshold, so the whole table verifies at any scale.
 
-import { BAND_EDGES, BAND_LABELS, moonshot as moonshotOf, pressure as pressureOf, quantile, shape as shapeOf, streaks as streaksOf, type Round } from "./analysis";
+import { BAND_EDGES, BAND_LABELS, bandIndex, moonshot as moonshotOf, pressure as pressureOf, shape as shapeOf, streaks as streaksOf, type Round } from "./analysis";
 
 // ------------------------------------------------------------------ windows
 
@@ -32,6 +32,17 @@ export function windowById(id: string): WindowDef | undefined {
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 const r4 = (v: number) => +v.toFixed(4);
 const r5 = (v: number) => +v.toFixed(5);
+
+/** For each round index, the length of the sub-threshold run it ends (1 if it clears the threshold). O(n). */
+function streakMapOf(rounds: Round[], threshold: number): number[] {
+  const out: number[] = new Array(rounds.length);
+  let run = 0;
+  for (let i = 0; i < rounds.length; i++) {
+    run = rounds[i].multiplier >= threshold ? 1 : run + 1;
+    out[i] = run;
+  }
+  return out;
+}
 
 /** Median gap between the most recent `span` rounds (rounds/min cadence). */
 export function medianIntervalMs(rounds: Round[], span = 200): number {
@@ -81,6 +92,7 @@ export function perRoundProbability(
   threshold: number,
   weights: Record<string, number>,
   recent = 200,
+  streakMap?: number[],
 ): PerRoundProbability {
   const n = rounds.length;
   if (n === 0) return { p: 0.5, baseRate: 0.5, components: [], note: "no history yet" };
@@ -99,16 +111,14 @@ export function perRoundProbability(
     ? hh + hl > 0 ? hh / (hh + hl) : baseRate
     : lh + ll > 0 ? lh / (lh + ll) : baseRate;
 
-  // streak: empirical P(hit | current below-streak length s)
-  let s = 0;
-  if (!prevHit) for (let i = n - 1; i >= 0 && flags[i] === 0; i--) s++;
+  // streak: empirical P(hit | current below-streak length s), counted via the O(n) map
+  const sm = streakMap ?? streakMapOf(rounds, threshold);
+  const s = prevHit ? 0 : sm[n - 1];
   let sN = 0, sHits = 0;
   if (!prevHit) {
     for (let i = 1; i < n; i++) {
-      if (flags[i - 1] === 1) continue;
-      let st = 0;
-      for (let j = i - 1; j >= 0 && flags[j] === 0; j--) st++;
-      if (st === s) { sN++; if (flags[i] === 1) sHits++; }
+      if (flags[i - 1]) continue;
+      if (sm[i - 1] === s) { sN++; if (flags[i]) sHits++; }
     }
   }
   const pStreak = sN >= 10 ? sHits / sN : baseRate;
@@ -228,6 +238,13 @@ export interface NextRoundBlend {
   mid: number;
 }
 
+export interface NextRoundBand {
+  label: string;
+  edge: number;
+  probability: number;
+  representative: number;
+}
+
 export interface NextRoundForecast {
   source: string;
   generatedAt: string;
@@ -239,6 +256,9 @@ export interface NextRoundForecast {
   rangeLo: number;
   rangeHi: number;
   band: string;
+  distribution: NextRoundBand[];
+  tailLift: number;
+  moonshotReach: number;
   lastRound: { multiplier: number; band: string };
   components: NextRoundBlend[];
   note: string;
@@ -256,27 +276,41 @@ export function nextRoundForecast(
   weights: Record<string, number>,
 ): NextRoundForecast {
   const n = rounds.length;
-  const last = rounds[n - 1];
-  const lastM = last ? last.multiplier : 1;
+  const lastM = rounds[n - 1]?.multiplier ?? 1;
   const cadenceMs = medianIntervalMs(rounds);
-  const per = perRoundProbability(rounds, 2, weights);
+  const st = streaksOf(rounds, 2);
+  const sm = streakMapOf(rounds, 2);
+  const per = perRoundProbability(rounds, 2, weights, 200, sm);
 
-  // per-model expected multiplier: log-space blend of each model's P(>=2x)
-  // applied to the measured next-round CDF (honest when no model has skill).
-  const tail = rounds.slice(-400).map((r) => r.multiplier).sort((a, b) => a - b);
-  const atLeast = (q: number) => quantile(tail, Math.min(0.999, Math.max(0.001, q)));
-  const impliedMid = (p2: number) => Math.max(1, lastM * (atLeast(p2) / lastM));
-  const components: NextRoundBlend[] = per.components.map((c) => ({ ...c, mid: +impliedMid(c.p).toFixed(2) }));
-  const wSum = components.reduce((a, c) => a + c.weight, 0) || 1;
-  const expected = Math.max(1, lastM * Math.exp(components.reduce((a, c) => a + c.weight * Math.log(impliedMid(c.p) / lastM), 0) / wSum));
-  const rangeLo = Math.max(1, expected * 0.5);
-  const rangeHi = expected * 2;
+  // ---- next-round band model -------------------------------------------------
+  // Split the measured distribution into bands (1.5 / 2 / 5 / 10 / 100 x).
+  // Conditional band shares are measured inside the <2 and >=2 halves; tail
+  // conditions (moonshot confidence, ignition) sharpen the >=2 split so hot
+  // tails push expected value and the upper range into moonshot territory
+  // instead of the old quantile-of-raw-mean (~2x) ceiling.
+  const recent = rounds.slice(-400);
+  const edges = [1, 1.5, 2, 5, 10, 100, Infinity];
+  const labels = ["<1.5x", "1.5–2x", "2–5x", "5–10x", "10–100x", "100x+"];
+  const counts = [0, 0, 0, 0, 0, 0];
+  const logSums = [0, 0, 0, 0, 0, 0];
+  for (const r of recent) {
+    const b = bandIndex(r.multiplier);
+    counts[b]++;
+    logSums[b] += Math.log(Math.max(1.01, r.multiplier));
+  }
+  const tot = recent.length;
+  const belowN = counts[0] + counts[1];
+  const aboveN = tot - belowN;
+  const rep = (b: number): number =>
+    counts[b] >= 5 ? Math.exp(logSums[b] / counts[b]) : b === 5 ? 200 : (edges[b] + edges[b + 1]) / 2;
+  const pBelow = belowN / tot;
+  const pAbove = aboveN / tot;
+  const condBelow = [0, 1].map((b) => (belowN ? counts[b] / belowN : 0.5));
+  const condAbove = [0, 1, 2, 3].map((i) => (aboveN ? counts[2 + i] / aboveN : 0.25));
 
-  // state heuristic — v5 naming, v6 signals (all independent of the estimate)
   const shape = shapeOf(rounds, 80);
   const ms = moonshotOf(rounds);
   const press = pressureOf(rounds);
-  const st = streaksOf(rounds, 2);
   const recent20 = rounds.slice(-20);
   const hiRun = recent20.filter((r) => r.multiplier >= 10).length;
   const aboveShare = recent20.length ? recent20.filter((r) => r.multiplier >= 2).length / recent20.length : 0;
@@ -288,20 +322,68 @@ export function nextRoundForecast(
   else if (aboveShare >= 0.4 && st.currentKind === "above" && st.current >= 3) state = "Bait";
   else if (st.currentKind === "below" && st.current >= 5) state = "Exhaustion";
 
+  const tailLift = clamp(
+    Math.min(1, Math.max(0, ms.confidence)) * 0.7 + (state === "Ignition" ? 0.5 : 0),
+    0,
+    1,
+  );
+  // Sharpen the >=2 split toward the tail; zero out the smallest 2-5x slice first.
+  const hi = condAbove.map((w, i) => w * (1 + tailLift * i * 0.7));
+  hi[0] *= Math.max(0, 1 - tailLift * 0.9);
+  const hiSum = hi.reduce((a, b) => a + b, 0) || 1;
+  const bandP = [
+    condBelow[0] * pBelow,
+    condBelow[1] * pBelow,
+    hi[0] / hiSum * pAbove,
+    hi[1] / hiSum * pAbove,
+    hi[2] / hiSum * pAbove,
+    hi[3] / hiSum * pAbove,
+  ].map((p) => r5(p));
+  const reps = [0, 1, 2, 3, 4, 5].map(rep);
+  const expected = bandP.reduce((a, p, i) => a + p * reps[i], 0);
+
+  // Quantiles of the band partition -> tight central range + moonshot reach.
+  const quantile = (q: number): number => {
+    let c = 0;
+    for (let i = 0; i < 6; i++) {
+      c += bandP[i];
+      if (c >= q) {
+        const lo = edges[i];
+        const hiE = edges[i + 1] === Infinity ? reps[i] * 2 : edges[i + 1];
+        return Math.sqrt(lo * hiE);
+      }
+    }
+    return reps[5] * 2;
+  };
+  const rangeLo = Math.max(1, quantile(0.25));
+  const rangeHi = Math.max(rangeLo, quantile(0.75));
+  const moonshotReach = quantile(0.85);
+
+  // per-model standalone multipliers from the same band model
+  const midFor = (p2: number): number => {
+    const below = 1 - p2;
+    const above = p2;
+    const mass = [condBelow[0] * below, condBelow[1] * below, hi[0] / hiSum * above, hi[1] / hiSum * above, hi[2] / hiSum * above, hi[3] / hiSum * above];
+    return Math.max(1, mass.reduce((a, m, i) => a + m * reps[i], 0));
+  };
+  const components: NextRoundBlend[] = per.components.map((c) => ({ ...c, mid: +midFor(c.p).toFixed(2) }));
+
   const confidence = Math.min(0.95, Math.max(0.05, per.p));
   const confidenceLabel = confidence >= 0.66 ? "HIGH" : confidence >= 0.38 ? "MEDIUM" : "LOW";
 
   const stateNotes: Record<string, string> = {
-    Ignition: `Consecutive 10x+ rounds inside the last 20 — the tail is hot and the next round leans into it (P(≥2x) ${Math.round(per.p * 100)}%).`,
-    Moonshot: `Moonshot conditions are building — ${Math.round(ms.confidence * 100)}% scanner confidence with ${press.overallPressure}% tail pressure across the mega targets.`,
-    Collapse: `Dry zone active (severity ${shape.dryZone.severity}) with a ${st.current}-round below-2x streak — energy is snuffed, a slide across the tape is the base case.`,
-    Bait: `${aboveShare * 100 | 0}% of the last 20 rounds cleared 2x and the streak is still above — a single spike inside this heat reads as a false invitation.`,
+    Ignition: `Consecutive 10x+ rounds inside the last 20 — the tail is hot, so the next-round distribution weights the moonshot bands hard (P(≥2x) ${Math.round(per.p * 100)}%).`,
+    Moonshot: `Moonshot conditions are building — ${Math.round(ms.confidence * 100)}% scanner confidence with ${press.overallPressure}% tail pressure; the upper range reaches the moonshot target.`,
+    Collapse: `Dry zone active (severity ${shape.dryZone.severity}) with a ${st.current}-round below-2x streak — energy is snuffed, the distribution compresses toward the base bands.`,
+    Bait: `${Math.round(aboveShare * 100)}% of the last 20 rounds cleared 2x and the streak is still above — a single spike inside this heat reads as a false invitation.`,
     Exhaustion: `The below-2x streak sits at ${st.current} rounds (max ${st.maxBelow}) — the ladder is worn out and a reset is more likely than another push.`,
-    Shelf: `No dominant signal — the shape layer reads ${shape.classification} and the measured rate governs the next round (P(≥2x) ${Math.round(per.p * 100)}%).`,
+    Shelf: `No dominant signal — the shape layer reads ${shape.classification} and the measured band distribution governs (P(≥2x) ${Math.round(per.p * 100)}%).`,
   };
-  const streakPart = st.currentKind === "below"
-    ? `drying ${st.current} rounds`
-    : `riding an above streak of ${st.current}`;
+  const streakPart = st.currentKind === "below" ? `drying ${st.current} rounds` : `riding an above streak of ${st.current}`;
+  const tailShare = bandP[4] + bandP[5];
+  const tailPart = tailShare >= 0.2
+    ? ` The next-round distribution still carries ${Math.round(tailShare * 100)}% in the 10x+ moonshot bands.`
+    : "";
 
   return {
     source,
@@ -314,9 +396,17 @@ export function nextRoundForecast(
     rangeLo: +rangeLo.toFixed(2),
     rangeHi: +rangeHi.toFixed(2),
     band: bandLabelOf(expected),
+    distribution: bandP.map((p, i) => ({
+      label: labels[i],
+      edge: edges[i],
+      probability: p,
+      representative: +reps[i].toFixed(2),
+    })),
+    tailLift: r4(tailLift),
+    moonshotReach: +moonshotReach.toFixed(2),
     lastRound: { multiplier: lastM, band: bandLabelOf(lastM) },
     components,
-    note: `${stateNotes[state]} Last round settled ${lastM.toFixed(2)}x in the ${bandLabelOf(lastM)} band, ${streakPart}.`,
+    note: `${stateNotes[state]} Last round settled ${lastM.toFixed(2)}x in the ${bandLabelOf(lastM)} band, ${streakPart}.${tailPart}`,
   };
 }
 
