@@ -105,8 +105,8 @@ class LocalStorage {
     return fn();
   }
 
-  async getAlarm() { return null; }
-  async setAlarm(_ms) { /* no-op locally */ }
+  async getAlarm() { return this._alarmAt ?? null; }
+  async setAlarm(ms) { this._alarmAt = ms; }
 
   close() {
     if (this.db) {
@@ -225,7 +225,32 @@ const coreModule = await import(resolve(__dirname, ".local-core.mjs"));
 const MomentoCore = coreModule.MomentoCore;
 
 console.log("[momento-v6] Instantiating MomentoCore...");
-const core = new MomentoCore(ctx, {});
+const core = new MomentoCore(ctx, {
+  ENTRIM_API_KEY: process.env.ENTRIM_API_KEY ?? "",
+});
+
+// Local Durable-Object alarm emulation: the deep tier (scheduled scans, chart
+// ledger, AI summary) and the accuracy engine run exactly as on Cloudflare.
+let alarmBusy = false;
+setInterval(async () => {
+  if (alarmBusy) return;
+  const at = storage._alarmAt;
+  if (at === undefined || at === null) {
+    storage._alarmAt = Date.now() + 30_000;
+    return;
+  }
+  if (Date.now() < at) return;
+  alarmBusy = true;
+  storage._alarmAt = null;
+  try {
+    await core.alarm();
+  } catch (e) {
+    console.error("[momento-v6] alarm failed", e?.message ?? e);
+  } finally {
+    alarmBusy = false;
+    if (!storage._alarmAt) storage._alarmAt = Date.now() + 60_000;
+  }
+}, 5_000);
 
 // Wait for bootstrap
 await new Promise(r => setTimeout(r, 2000));

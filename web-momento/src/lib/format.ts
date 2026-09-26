@@ -42,11 +42,9 @@ export function timeAgo(ts: string | number | null | undefined): string {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
-/** Canonical multiplier color used across charts and feeds. */
+/** Canonical multiplier color — the Spribe Aviator scheme (blue < 2x, purple 2–10x, pink ≥ 10x). */
 export function multColor(m: number): string {
-  if (m < 2) return "#3B82F6"; // blue
-  if (m < 5) return "#8B5CF6"; // violet
-  if (m < 10) return "#A855F7"; // purple
-  if (m < 100) return "#F59E0B"; // amber
-  return "#F43F5E"; // rose — mega
+  if (m < 2) return "rgb(52, 180, 255)";
+  if (m < 10) return "rgb(145, 62, 248)";
+  return "rgb(192, 23, 180)";
 }

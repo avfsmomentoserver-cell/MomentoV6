@@ -11,6 +11,7 @@ export interface DocMeta {
 }
 
 export const DOCS: DocMeta[] = [
+  { slug: "v6-4-full-intelligence", title: "v6.4 Full Intelligence Platform", section: "Start here", summary: "Everything new in v6.4: TradingView charts, realtime + deep tiers, Scheduler, ShapeShifter Darkboard, Chart Lab, DNA/linguistics filters, Eagle Eye, Investigation, reconstruction, Top-round seeding and the Entrim AI summary.", audience: "operator" },
   { slug: "overview", title: "Platform Overview", section: "Start here", summary: "What Momento v5 is, the pipeline, and how the coordinated platform is organized.", audience: "client" },
   { slug: "architecture", title: "Architecture", section: "Start here", summary: "Worker + Durable Object SQLite backend, web console, data flow, and module boundaries.", audience: "developer" },
   { slug: "api-reference", title: "API Reference", section: "Developer", summary: "Every backend endpoint: method, path, params, response shape.", audience: "developer" },

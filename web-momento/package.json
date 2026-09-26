@@ -1,11 +1,11 @@
 {
   "name": "rork-web-app",
-  "version": "6.3.0",
+  "version": "6.4.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node scripts/build-source-bundle.mjs && node scripts/generate-docs.mjs && vite build",
+    "build": "node scripts/generate-docs.mjs && vite build",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview",
@@ -13,7 +13,6 @@
     "test:browser": "vitest --config vitest.browser.config.ts",
     "test:browser:run": "vitest run --config vitest.browser.config.ts",
     "test:watch": "vitest",
-    "bundle:source": "node scripts/build-source-bundle.mjs",
     "docs:gen": "node scripts/generate-docs.mjs"
   },
   "dependencies": {
@@ -52,6 +51,7 @@
     "date-fns": "^4.4.0",
     "embla-carousel-react": "^8.6.0",
     "input-otp": "^1.4.2",
+    "lightweight-charts": "^5.2.1",
     "lucide-react": "^0.577.0",
     "next-themes": "^0.4.6",
     "react": "^19.2.7",

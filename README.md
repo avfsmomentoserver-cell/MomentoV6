@@ -1,6 +1,8 @@
 # Momento Platform
 
-v6.3.0 — full-intelligence next-round forecast (V5.01-backtd engine × every v6 engine, earned mixture weights) + forex analysis + honest prediction pipeline + compounding accuracy engine.
+v6.4.0 — full intelligence platform: TradingView-grade charts with drawings, realtime + scheduled deep computation, ShapeShifter Darkboard and Chart Lab (drawn shape predictions decomputed to rounds with ETAs), filterable DNA / linguistics / vocabulary, V5-style Eagle Eye, Investigation Suite, labelled session-gap reconstruction, Spribe Top-rounds and span seeding, and an Entrim AI forecast summary. See `docs/markdown/v6-4-full-intelligence.md`.
+
+> Secrets: set the AI key with `wrangler secret put ENTRIM_API_KEY` (production) or `ENTRIM_API_KEY=… node functions/local-dev.mjs` (local). Never commit keys.
 
 ## Quickstart
 

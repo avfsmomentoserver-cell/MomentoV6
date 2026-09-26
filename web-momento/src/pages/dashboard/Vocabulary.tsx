@@ -1,158 +1,89 @@
+// Vocabulary v2 — phrases discovered by the deep tier, graded against base rates,
+// plus the formal registry (v6.3) for promotion / deprecation.
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { toast } from "sonner";
-import { Loader2, Plus, Search, Sparkles, Trash2 } from "lucide-react";
+import { Play, Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
-import type { VocabItem } from "@/lib/types";
-import { Loading, PageHeader, Panel, StatTile } from "@/components/bits";
+import { fmtInt, fmtPct, timeAgo } from "@/lib/format";
+import { PageHeader, Panel, StatTile } from "@/components/bits";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Word } from "@/pages/dashboard/Linguistics";
+import VocabularyRegistry from "@/pages/dashboard/VocabularyRegistry";
+import { cn } from "@/lib/utils";
 
-interface VocabResponse {
-  vocabulary: VocabItem[];
-  counts: { status: string; n: number }[];
-}
+interface Entry { token: string; layer: string; layers: string[]; definition: string; uses: number; hits: number; misses: number; score: number; lift: number; z: number }
+interface Job { id: number; kind: string; name: string; every_min: number; last_run_ms: number | null }
 
-const STATUS_TONE: Record<string, string> = {
-  candidate: "bg-amber-400/10 text-amber-400 border-amber-400/30",
-  validated: "bg-emerald-400/10 text-emerald-400 border-emerald-400/30",
-  formalized: "bg-primary/10 text-primary border-primary/30",
-  deprecated: "bg-rose-400/10 text-rose-400 border-rose-400/30",
-};
+const HUE_OF: Record<string, string> = { dust: "blue", low: "blue", soft: "blue", lift: "purple", climb: "purple", rise: "purple", surge: "pink", blast: "pink", moon: "pink", legend: "pink" };
 
 export default function Vocabulary() {
   const qc = useQueryClient();
-  const [statusFilter, setStatusFilter] = useState<string | null>(null);
-  const [newToken, setNewToken] = useState("");
-  const [newDef, setNewDef] = useState("");
-
-  const vocab = useQuery({
-    queryKey: ["vocabulary", statusFilter],
-    queryFn: () => api.get<VocabResponse>(`/api/v1/vocabulary${statusFilter ? `?status=${statusFilter}` : ""}`),
+  const [filter, setFilter] = useState<"all" | "up" | "down" | "sig">("all");
+  const jobs = useQuery({ queryKey: ["deep", "jobs"], queryFn: () => api.get<{ jobs: Job[] }>("/api/v1/deep/jobs") });
+  const job = jobs.data?.jobs.find((j) => j.kind === "vocabulary");
+  const res = useQuery({
+    queryKey: ["deep", "result", job?.id],
+    enabled: !!job,
+    queryFn: () => api.get<{ result: { created_ms: number; rounds: number; duration_ms: number; payload: { discovered: number; written: number; top: Entry[] } } | null }>(`/api/v1/deep/result?job=${job?.id}`),
   });
-  const learning = useQuery({
-    queryKey: ["vocabulary-learning"],
-    queryFn: () => api.get<{ total: number; byStatus: { status: string; n: number }[] }>("/api/v1/vocabulary/learning/status"),
-  });
-
-  const invalidate = () => {
-    qc.invalidateQueries({ queryKey: ["vocabulary"] });
-    qc.invalidateQueries({ queryKey: ["vocabulary-learning"] });
-  };
-
-  const create = useMutation({
-    mutationFn: () => api.post("/api/v1/vocabulary", { token: newToken, definition: newDef, layer: "manual" }),
-    onSuccess: () => {
-      toast.success("Token added");
-      setNewToken("");
-      setNewDef("");
-      invalidate();
-    },
-    onError: (e: Error) => toast.error(e.message),
-  });
-  const discover = useMutation({
-    mutationFn: () => api.post<{ added: number; candidates: number }>("/api/v1/vocabulary/discover", {}),
-    onSuccess: (d) => {
-      toast.success(`Discovery pass: ${d.added} new candidate tokens from ${d.candidates} observations`);
-      invalidate();
-    },
-    onError: (e: Error) => toast.error(e.message),
-  });
-  const formalize = useMutation({
-    mutationFn: (id: number) => api.post(`/api/v1/vocabulary/${id}/formalize`),
-    onSuccess: () => {
-      toast.success("Token formalized into the vocabulary");
-      invalidate();
-    },
-    onError: (e: Error) => toast.error(e.message),
-  });
-  const deprecate = useMutation({
-    mutationFn: (id: number) => api.post(`/api/v1/vocabulary/${id}/deprecate`),
-    onSuccess: invalidate,
-  });
-  const remove = useMutation({
-    mutationFn: (id: number) => api.del(`/api/v1/vocabulary/${id}`),
-    onSuccess: invalidate,
-  });
+  const run = useMutation({ mutationFn: () => api.post("/api/v1/deep/run", { id: job?.id }), onSuccess: () => void qc.invalidateQueries({ queryKey: ["deep"] }) });
+  const r = res.data?.result;
+  const all = r?.payload.top ?? [];
+  const rows = all.filter((e) => (filter === "up" ? e.lift > 1 : filter === "down" ? e.lift < 1 : filter === "sig" ? Math.abs(e.z) >= 3 : true));
+  const sig = all.filter((e) => Math.abs(e.z) >= 3).length;
 
   return (
     <div className="animate-in-up space-y-4">
       <PageHeader
-        title="Vocabulary Learning System"
-        subtitle="Candidates are discovered from the live series, evaluated against outcomes, formalized when their score earns it, and deprecated when it doesn't."
-        actions={
-          <Button className="gap-2" onClick={() => discover.mutate()} disabled={discover.isPending}>
-            {discover.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-            Run discovery pass
-          </Button>
-        }
+        title="Vocabulary"
+        subtitle="Phrases the market uses more (or less) often than chance before a ≥2× round, discovered on the deep tier from the full history and graded with z-scores. The registry tab holds the formal, promotable vocabulary."
+        actions={<Button size="sm" variant="outline" className="gap-1.5" onClick={() => run.mutate()} disabled={!job || run.isPending}><Play className="h-3.5 w-3.5" /> Rediscover now</Button>}
       />
-
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <StatTile label="Total tokens" value={learning.data?.total ?? 0} sub="vocabulary size" />
-        {(learning.data?.byStatus ?? []).slice(0, 3).map((s) => (
-          <StatTile key={s.status} label={s.status} value={s.n} sub="tokens" tone={s.status === "validated" ? "good" : "default"} />
-        ))}
-      </div>
-
-      <Panel title="Add a token manually">
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="flex-1 space-y-1.5 min-w-[160px]">
-            <Input placeholder="token, e.g. 2–5x·purple→10–100x" value={newToken} onChange={(e) => setNewToken(e.target.value)} />
+      <Tabs defaultValue="discovered">
+        <TabsList>
+          <TabsTrigger value="discovered">Discovered phrases</TabsTrigger>
+          <TabsTrigger value="registry">Registry</TabsTrigger>
+        </TabsList>
+        <TabsContent value="discovered" className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <StatTile label="Phrases graded" value={fmtInt(r?.payload.discovered)} sub={r ? `computed ${timeAgo(r.created_ms)} on ${fmtInt(r.rounds)} rounds` : "—"} tone="signal" />
+            <StatTile label="|z| ≥ 3" value={sig} sub="survive the strict bar" tone={sig ? "warn" : "default"} />
+            <StatTile label="Written to registry" value={fmtInt(r?.payload.written)} sub="validated when |z| ≥ 3 and n ≥ 100" />
+            <StatTile label="Schedule" value={job ? `${job.every_min} min` : "—"} sub={job?.last_run_ms ? `last ${timeAgo(job.last_run_ms)}` : "deep tier"} />
           </div>
-          <div className="flex-1 space-y-1.5 min-w-[200px]">
-            <Input placeholder="definition (optional)" value={newDef} onChange={(e) => setNewDef(e.target.value)} />
+          <div className="flex gap-1.5">
+            {(["all", "up", "down", "sig"] as const).map((k) => (
+              <button key={k} type="button" onClick={() => setFilter(k)} className={cn("rounded-md border px-2.5 py-1 text-[11.5px]", filter === k ? "border-primary/50 bg-primary/10 text-primary" : "border-border text-muted-foreground")}>
+                {k === "all" ? "All" : k === "up" ? "Raises P(≥2×)" : k === "down" ? "Lowers P(≥2×)" : "|z| ≥ 3 only"}
+              </button>
+            ))}
           </div>
-          <Button className="gap-2" disabled={!newToken || create.isPending} onClick={() => create.mutate()}>
-            <Plus className="h-4 w-4" /> Add
-          </Button>
-        </div>
-      </Panel>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setStatusFilter(null)}>
-          <Search className="h-3 w-3" /> All
-        </Button>
-        {["candidate", "validated", "formalized", "deprecated"].map((s) => (
-          <Button key={s} variant={statusFilter === s ? "default" : "outline"} size="sm" onClick={() => setStatusFilter(s)}>
-            {s}
-          </Button>
-        ))}
-      </div>
-
-      <Panel>
-        {vocab.isLoading ? (
-          <Loading rows={4} />
-        ) : (
-          <div className="space-y-1.5">
-            {vocab.data?.vocabulary.map((v) => (
-              <div key={v.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-background/40 px-3 py-2">
-                <span className="font-data text-[12.5px]">{v.token}</span>
-                <Badge variant="outline" className={`text-[10px] ${STATUS_TONE[v.status] ?? ""}`}>{v.status}</Badge>
-                {v.definition && <span className="hidden flex-1 truncate text-[11.5px] text-muted-foreground md:block">{v.definition}</span>}
-                <span className="ml-auto font-data text-[11px] text-muted-foreground">score {v.score.toFixed(2)} · n={v.hits + v.misses}</span>
-                {v.status === "candidate" && (
-                  <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => formalize.mutate(v.id)}>
-                    formalize
-                  </Button>
-                )}
-                <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px] text-muted-foreground" onClick={() => deprecate.mutate(v.id)}>
-                  deprecate
-                </Button>
-                <Button size="sm" variant="ghost" className="h-7 px-2 text-destructive" onClick={() => remove.mutate(v.id)}>
-                  <Trash2 className="h-3 w-3" />
-                </Button>
+          <div className="grid gap-2.5 md:grid-cols-2 xl:grid-cols-3">
+            {rows.map((e) => (
+              <div key={e.token} className={cn("rounded-xl border bg-card/60 p-3", Math.abs(e.z) >= 3 ? "border-amber-400/40" : "border-border/70")}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex flex-wrap gap-1">{e.layers.map((w, i) => <Word key={i} w={w} hue={HUE_OF[w] ?? "blue"} big />)}</div>
+                  <span className="rounded bg-muted px-1.5 py-0.5 font-data text-[10px] text-muted-foreground">{e.layer}</span>
+                </div>
+                <p className="mt-2 text-[12px] leading-snug text-muted-foreground">{e.definition}</p>
+                <div className="mt-2 grid grid-cols-4 gap-1.5 text-center font-data text-[11px]">
+                  <div className="rounded bg-background/50 py-1"><p className="text-[9.5px] text-muted-foreground">uses</p>{fmtInt(e.uses)}</div>
+                  <div className="rounded bg-background/50 py-1"><p className="text-[9.5px] text-muted-foreground">P(≥2×)</p>{fmtPct(e.score, 1)}</div>
+                  <div className={cn("rounded bg-background/50 py-1", e.lift > 1 ? "text-emerald-300" : "text-rose-300")}><p className="text-[9.5px] text-muted-foreground">lift</p>{e.lift.toFixed(2)}×</div>
+                  <div className={cn("rounded bg-background/50 py-1", Math.abs(e.z) >= 3 && "text-amber-300")}><p className="text-[9.5px] text-muted-foreground">z</p>{e.z}</div>
+                </div>
               </div>
             ))}
-            {!vocab.data?.vocabulary.length && (
-              <p className="py-8 text-center text-[13px] text-muted-foreground">
-                No tokens yet — run a discovery pass to harvest candidates from the live series.
-              </p>
-            )}
           </div>
-        )}
-      </Panel>
+          {!rows.length && (
+            <Panel><p className="flex items-center justify-center gap-2 py-8 text-[12px] text-muted-foreground"><Sparkles className="h-4 w-4" />{res.isLoading ? "Loading…" : "No discovered phrases yet — press Rediscover."}</p></Panel>
+          )}
+        </TabsContent>
+        <TabsContent value="registry">
+          <VocabularyRegistry />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

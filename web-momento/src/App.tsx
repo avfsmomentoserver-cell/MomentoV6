@@ -34,6 +34,8 @@ import Investigation from "@/pages/dashboard/Investigation";
 import EagleEye from "@/pages/dashboard/EagleEye";
 import BirdEye from "@/pages/dashboard/BirdEye";
 import Darkboard from "@/pages/dashboard/Darkboard";
+import ChartLab from "@/pages/dashboard/ChartLab";
+import Scheduler from "@/pages/dashboard/Scheduler";
 import RangeLabPage from "@/pages/dashboard/RangeLab";
 import CalibrationLab from "@/pages/dashboard/Calibration";
 import Ingest from "@/pages/dashboard/Ingest";
@@ -101,6 +103,8 @@ const App = () => (
               <Route path="/dashboard/eagle-eye" element={<EagleEye />} />
               <Route path="/dashboard/birdeye" element={<BirdEye />} />
               <Route path="/dashboard/darkboard" element={<Darkboard />} />
+              <Route path="/dashboard/chart-lab" element={<ChartLab />} />
+              <Route path="/dashboard/scheduler" element={<Scheduler />} />
               <Route path="/dashboard/range-lab" element={<RangeLabPage />} />
               <Route path="/dashboard/calibration" element={<CalibrationLab />} />
               <Route path="/dashboard/ingest" element={<Ingest />} />

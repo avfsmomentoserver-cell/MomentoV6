@@ -66,8 +66,9 @@ import {
   type FullIntelligenceForecast,
   type IntelWeights,
 } from "./intelligence";
+import { deepTick, initV64Schema, routeV64, type CoreAdapter } from "./v64routes";
 
-export const VERSION = "6.3.0";
+export const VERSION = "6.4.0";
 
 type Rows = Record<string, unknown>;
 
@@ -87,6 +88,7 @@ export class MomentoCore extends DurableObject {
     super(ctx, env);
     this.ctx.blockConcurrencyWhile(async () => {
       this.initSchema();
+      this.initV64();
       await this.bootstrap();
       this.booted = true;
     });
@@ -364,6 +366,10 @@ export class MomentoCore extends DurableObject {
     `);
   }
 
+  private initV64(): void {
+    initV64Schema(this.ctx.storage.sql as never);
+  }
+
   private async bootstrap(): Promise<void> {
     const sql = this.ctx.storage.sql;
     const now = Date.now();
@@ -509,17 +515,27 @@ export class MomentoCore extends DurableObject {
     this.analysisCache.clear();
   }
 
-  private roundsFor(source: string | null, cacheable = true): Round[] {
-    const key = source ?? "all";
+  /**
+   * Rounds for a source, oldest first. Reconstructed (gap-fill) rounds are
+   * included in forecast context unless the operator disables it
+   * (setting reconstruct_in_forecast = 0); calibration never scores them.
+   */
+  private roundsFor(source: string | null, cacheableOrOpts: boolean | { includeReconstructed?: boolean } = true): Round[] {
+    const cacheable = typeof cacheableOrOpts === "boolean" ? cacheableOrOpts : true;
+    const wantRecon = typeof cacheableOrOpts === "object" && cacheableOrOpts.includeReconstructed !== undefined
+      ? cacheableOrOpts.includeReconstructed
+      : this.setting("reconstruct_in_forecast") !== "0";
+    const key = `${source ?? "all"}|${wantRecon ? "r" : "o"}`;
     const stats = this.tableStats();
     if (cacheable) {
       const hit = this.roundsCache.get(key);
       if (hit && hit.maxId === stats.maxId && hit.count === stats.count) return hit.rounds;
     }
+    const originClause = wantRecon ? "" : " AND origin != 'reconstructed'";
     const rows = (
       source && source !== "all"
-        ? this.ctx.storage.sql.exec("SELECT id, ts, ts_ms, multiplier, color, source, session_id FROM rounds WHERE source = ? ORDER BY ts_ms ASC", source).toArray()
-        : this.ctx.storage.sql.exec("SELECT id, ts, ts_ms, multiplier, color, source, session_id FROM rounds ORDER BY ts_ms ASC").toArray()
+        ? this.ctx.storage.sql.exec(`SELECT id, ts, ts_ms, multiplier, color, source, session_id, origin FROM rounds WHERE source = ?${originClause} ORDER BY ts_ms ASC`, source).toArray()
+        : this.ctx.storage.sql.exec(`SELECT id, ts, ts_ms, multiplier, color, source, session_id, origin FROM rounds WHERE 1 = 1${originClause} ORDER BY ts_ms ASC`).toArray()
     ) as Rows[];
     const rounds: Round[] = rows.map((r) => ({
       id: r.id as number,
@@ -529,6 +545,7 @@ export class MomentoCore extends DurableObject {
       color: (r.color as string) ?? null,
       source: r.source as string,
       sessionId: (r.session_id as number) ?? null,
+      origin: (r.origin as string) ?? "observed",
     }));
     if (cacheable) this.roundsCache.set(key, { maxId: stats.maxId, count: stats.count, rounds });
     return rounds;
@@ -548,8 +565,9 @@ export class MomentoCore extends DurableObject {
   private rebuildSessions(source: string): void {
     const gapMs = 30 * 60 * 1000;
     const sql = this.ctx.storage.sql;
-    const rows = sql.exec("SELECT id, ts_ms, multiplier FROM rounds WHERE source = ? ORDER BY ts_ms ASC", source).toArray() as Rows[];
+    const rows = sql.exec("SELECT id, ts_ms, multiplier FROM rounds WHERE source = ? AND origin != 'reconstructed' ORDER BY ts_ms ASC", source).toArray() as Rows[];
     sql.exec("DELETE FROM sessions WHERE source = ?", source);
+    sql.exec("UPDATE rounds SET session_id = NULL WHERE source = ?", source);
     let sid: number | null = null;
     let startRow: Rows | null = null;
     let prev: Rows | null = null;
@@ -557,7 +575,7 @@ export class MomentoCore extends DurableObject {
     let max = 0;
     const close = () => {
       if (sid !== null && startRow && prev) {
-        sql.exec("UPDATE rounds SET session_id = ? WHERE id BETWEEN ? AND ?", sid, startRow.id as number, prev.id as number);
+        sql.exec("UPDATE rounds SET session_id = ? WHERE source = ? AND origin != 'reconstructed' AND ts_ms BETWEEN ? AND ?", sid, source, startRow.ts_ms as number, prev.ts_ms as number);
         sql.exec("UPDATE sessions SET started_ms = ?, ended_ms = ?, rounds = ?, max_multiplier = ? WHERE id = ?", startRow.ts_ms as number, prev.ts_ms as number, count, max, sid);
       }
     };
@@ -599,7 +617,7 @@ export class MomentoCore extends DurableObject {
     return { tsMs, multiplier: Math.min(multiplier, 1e7), color };
   }
 
-  private ingestRounds(source: string, method: string, incoming: unknown[]): { inserted: number; rejected: number } {
+  private ingestRounds(source: string, method: string, incoming: unknown[], origin = "observed"): { inserted: number; rejected: number } {
     const sql = this.ctx.storage.sql;
     const now = Date.now();
     let inserted = 0;
@@ -613,8 +631,8 @@ export class MomentoCore extends DurableObject {
       for (const r of sorted) {
         const ts = new Date(r.tsMs).toISOString().replace(/\.\d{3}Z$/, ".000Z");
         const res = sql.exec(
-          "INSERT OR IGNORE INTO rounds (ts, ts_ms, multiplier, color, source, session_id, ingest, created_ms) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
-          ts, r.tsMs, r.multiplier, r.color, source, method, now,
+          "INSERT OR IGNORE INTO rounds (ts, ts_ms, multiplier, color, source, session_id, ingest, created_ms, origin) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)",
+          ts, r.tsMs, r.multiplier, r.color, source, method, now, origin,
         );
         inserted += res.rowsWritten ?? 0;
       }
@@ -932,7 +950,7 @@ export class MomentoCore extends DurableObject {
       .exec("SELECT MIN(due_ms) AS d FROM scheduled_predictions WHERE resolved_ms IS NULL")
       .toArray()[0] as { d: number | null } | undefined;
     const due = row?.d ?? null;
-    const next = due ? Math.min(due + 1_000, Date.now() + 15 * 60_000) : Date.now() + 60_000;
+    const next = due ? Math.min(due + 1_000, Date.now() + 2 * 60_000) : Date.now() + 60_000;
     await this.ctx.storage.setAlarm(Math.max(Date.now() + 5_000, next));
   }
 
@@ -942,6 +960,11 @@ export class MomentoCore extends DurableObject {
       await this.accuracyTick();
     } catch (e) {
       console.error("accuracy alarm tick failed", e instanceof Error ? e.message : String(e));
+    }
+    try {
+      await this.runDeep();
+    } catch (e) {
+      console.error("deep tier tick failed", e instanceof Error ? e.message : String(e));
     }
     await this.scheduleAccuracyAlarm();
   }
@@ -1021,9 +1044,9 @@ export class MomentoCore extends DurableObject {
     const sql = this.ctx.storage.sql;
     const all = this.roundsFor(null);
     const existing = (sql.exec("SELECT COUNT(*) AS n, MAX(created_ms) AS last FROM round_calibrations WHERE id <> -1").toArray()[0] as { n: number; last: number | null });
-    const targets = existing.n
+    const targets = (existing.n
       ? all.filter((x) => x.tsMs > (existing.last ?? 0))
-      : all.slice(-120);
+      : all.slice(-120)).filter((x) => x.origin !== "reconstructed");
     let scored = 0;
     for (const r of targets) {
       const history = all.filter((x) => x.tsMs < r.tsMs);
@@ -1141,6 +1164,7 @@ export class MomentoCore extends DurableObject {
     const weights = this.weightsMap();
     for (let i = startIdx; i < all.length; i++) {
       const target = all[i];
+      if (target.origin === "reconstructed") continue; // fills are context, never scored
       const history = all.slice(0, i);
       const ledger = this.intelLedger();
       const corr = this.intelCorrection();
@@ -1188,6 +1212,33 @@ export class MomentoCore extends DurableObject {
     );
   }
 
+  // ------------------------------------------------------- v6.4 adapter
+
+  private _adapter: CoreAdapter | null = null;
+  private adapter(): CoreAdapter {
+    if (this._adapter) return this._adapter;
+    this._adapter = {
+      sql: this.ctx.storage.sql as never,
+      env: ((this as unknown as { env?: Record<string, unknown> }).env ?? {}) as Record<string, unknown>,
+      roundsFor: (source, opts) => this.roundsFor(source, opts ?? true),
+      invalidate: () => this.invalidateCaches(),
+      setting: (k) => this.setting(k),
+      setSetting: (k, v) => this.setSetting(k, v),
+      tableStats: () => this.tableStats(),
+      ingest: (source, method, rows, origin) => this.ingestRounds(source, method, rows, origin),
+      rebuildSessions: (source) => this.rebuildSessions(source),
+      intel: (rounds, source) => this.intelForecast(rounds, source) as unknown as Record<string, unknown>,
+      audit: (actor, action, target, meta) => this.audit(actor, action, target, meta),
+      analysis: (source) => this.analysisPayload(source),
+    };
+    return this._adapter;
+  }
+
+  /** Deep tier: run every scheduled job that is due (alarm + local scheduler). */
+  async runDeep(): Promise<{ ran: string[] }> {
+    return deepTick(this.adapter());
+  }
+
   // ------------------------------------------------------------------- router
 
   override async fetch(request: Request): Promise<Response> {
@@ -1207,6 +1258,10 @@ export class MomentoCore extends DurableObject {
   private async route(method: string, path: string, q: URLSearchParams, request: Request): Promise<Response> {
     const sql = this.ctx.storage.sql;
     const body = method === "POST" || method === "PUT" ? await readBody(request) : {};
+
+    // ---- v6.4 surface (seeding, reconstruction, eagle eye, dna, linguistics, investigation, chart lab, deep tier, AI)
+    const v64 = await routeV64(this.adapter(), method, path, q, body);
+    if (v64) return v64;
 
     // ---- system
     if (path === "/ping") return ok({ service: "momento-core", version: VERSION, booted: this.booted });
@@ -1266,8 +1321,8 @@ export class MomentoCore extends DurableObject {
       const source = q.get("source");
       const rows = (
         source && source !== "all"
-          ? sql.exec("SELECT id, ts, multiplier, color, source, session_id FROM rounds WHERE source = ? ORDER BY ts_ms DESC LIMIT ?", source, clampInt(q.get("limit"), 1, 100, 20)).toArray()
-          : sql.exec("SELECT id, ts, multiplier, color, source, session_id FROM rounds ORDER BY ts_ms DESC LIMIT ?", clampInt(q.get("limit"), 1, 100, 20)).toArray()
+          ? sql.exec("SELECT id, ts, multiplier, color, source, session_id, origin, ingest FROM rounds WHERE source = ? ORDER BY ts_ms DESC LIMIT ?", source, clampInt(q.get("limit"), 1, 200, 20)).toArray()
+          : sql.exec("SELECT id, ts, multiplier, color, source, session_id, origin, ingest FROM rounds ORDER BY ts_ms DESC LIMIT ?", clampInt(q.get("limit"), 1, 200, 20)).toArray()
       ) as Rows[];
       return ok({ rounds: rows });
     }
@@ -1840,14 +1895,14 @@ export class MomentoCore extends DurableObject {
 
     // ---- settings / users / audit
     if (path === "/api/v1/settings" && method === "GET") {
-      return ok({ settings: Object.fromEntries((sql.exec("SELECT key, value FROM settings").toArray() as Rows[]).map((r) => [r.key as string, r.value])) });
+      return ok({ settings: Object.fromEntries((sql.exec("SELECT key, value FROM settings").toArray() as Rows[]).map((r) => [r.key as string, /api_key|secret|token/i.test(r.key as string) && r.value ? "••••" + String(r.value).slice(-4) : r.value])) });
     }
     if (path === "/api/v1/settings" && (method === "PUT" || method === "POST")) {
       const op = this.requireOperator(request);
       const values = (body.values as Record<string, string>) ?? Object.fromEntries(Object.entries(body).filter(([k]) => k !== "values"));
       for (const [k, v] of Object.entries(values)) this.setSetting(k, String(v));
       this.audit(op.email as string, "settings.update", null, values);
-      return ok({ settings: Object.fromEntries((sql.exec("SELECT key, value FROM settings").toArray() as Rows[]).map((r) => [r.key as string, r.value])) });
+      return ok({ settings: Object.fromEntries((sql.exec("SELECT key, value FROM settings").toArray() as Rows[]).map((r) => [r.key as string, /api_key|secret|token/i.test(r.key as string) && r.value ? "••••" + String(r.value).slice(-4) : r.value])) });
     }
     if (path === "/api/v1/users" && method === "GET") {
       this.requireOperator(request);

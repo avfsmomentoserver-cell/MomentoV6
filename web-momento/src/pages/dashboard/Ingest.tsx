@@ -11,6 +11,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { ReconstructQuick, SpanSeeder, TopRoundsSeeder } from "@/components/v64/Seeders";
+import { hueColor } from "@/lib/v64";
 
 interface FeedStatus {
   enabled: boolean;
@@ -159,7 +161,12 @@ export default function Ingest() {
         setDbState((s) => (s ? { ...s, progress: Math.min(i + DB_CHUNK, rounds.length) / rounds.length } : s));
       }
       toast.success(`${fmtInt(inserted)} rounds imported from ${mapping.table}${rejected ? `, ${fmtInt(rejected)} rejected` : ""}`);
-      toast("Large import? Hit “Rebuild sessions” to re-sessionize", { duration: 6_000 });
+      try {
+        const pr = await api.post<{ jobs: string[] }>("/api/v1/seed/prime", {});
+        toast(`Sessions rebuilt and ${pr.jobs.length} intelligence jobs primed on the imported rounds`, { duration: 6_000 });
+      } catch {
+        toast("Imported — run “Prime intelligence” to seed DNA, linguistics and shapes", { duration: 6_000 });
+      }
       invalidate();
       setDbState(null);
     } catch (e) {
@@ -349,11 +356,19 @@ export default function Ingest() {
         </div>
       </Panel>
 
+      <div className="grid gap-4 xl:grid-cols-2">
+        <TopRoundsSeeder />
+        <div className="space-y-4">
+          <SpanSeeder />
+          <ReconstructQuick />
+        </div>
+      </div>
+
       <Panel title="Ingest feed (latest 15)">
         <div className="space-y-1">
           {latest.data?.rounds.map((r) => (
             <div key={r.id} className="flex items-center gap-3 border-b border-border/40 py-1.5 text-[12.5px] last:border-0">
-              <span className="font-data w-16 text-right" style={{ color: r.multiplier >= 10 ? "#F59E0B" : r.multiplier >= 2 ? "#8B5CF6" : "#3B82F6" }}>{fmtMult(r.multiplier)}</span>
+              <span className="font-data w-16 text-right" style={{ color: hueColor(r.multiplier) }}>{fmtMult(r.multiplier)}</span>
               <span className="font-data text-muted-foreground">{r.source}</span>
               <span className="font-data text-muted-foreground/70">session #{r.session_id ?? "—"}</span>
               <span className="ml-auto text-[11px] text-muted-foreground">{timeAgo(r.ts)}</span>

@@ -1,6 +1,8 @@
 import { Link, NavLink, useLocation } from "react-router-dom";
 import {
   Activity,
+  CalendarClock,
+  Shapes,
   Blocks,
   BookOpen,
   BrainCircuit,
@@ -71,6 +73,8 @@ export const NAV_GROUPS: NavGroup[] = [
       { to: "/dashboard/pattern-dna", label: "Pattern DNA", icon: Zap },
       { to: "/dashboard/studio", label: "Forecast Studio", icon: BrainCircuit },
       { to: "/dashboard/linguistics", label: "Linguistics", icon: Fingerprint },
+      { to: "/dashboard/vocabulary", label: "Vocabulary", icon: Fingerprint },
+      { to: "/dashboard/chart-lab", label: "Chart Lab", icon: Shapes },
       { to: "/dashboard/investigation", label: "Investigation Suite", icon: FlaskConical },
     ],
   },
@@ -89,6 +93,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: "/dashboard/ingest", label: "Ingest Console", icon: Radio },
       { to: "/dashboard/eagle-eye", label: "Eagle Eye", icon: Eye },
+      { to: "/dashboard/scheduler", label: "Scheduler", icon: CalendarClock },
       { to: "/dashboard/sources", label: "Sources", icon: Activity },
       { to: "/dashboard/birdeye", label: "Bird's Eye", icon: LineChart },
       { to: "/dashboard/build-steps", label: "Build Steps", icon: Download },
@@ -98,10 +103,9 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: "Research",
     items: [
-      { to: "/dashboard/darkboard", label: "Darkboard", icon: Layers },
+      { to: "/dashboard/darkboard", label: "ShapeShifter Darkboard", icon: Shapes },
       { to: "/dashboard/range-lab", label: "Range Lab", icon: FlaskConical },
       { to: "/dashboard/calibration", label: "Calibration", icon: SlidersHorizontal },
-      { to: "/dashboard/vocabulary", label: "Vocabulary", icon: Fingerprint },
       { to: "/dashboard/testing", label: "Round Testing", icon: SlidersHorizontal },
     ],
   },
@@ -176,7 +180,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
             </span>
             <span className="leading-tight">
               <span className="block font-data text-[11px] font-bold uppercase tracking-[0.18em] text-foreground">Momento</span>
-              <span className="block text-[10px] text-muted-foreground">Platform v6.3</span>
+              <span className="block text-[10px] text-muted-foreground">Platform v6.4</span>
             </span>
           </Link>
           <button
@@ -212,7 +216,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
 
         <div className="border-t border-sidebar-border px-4 py-3">
           <p className="font-data text-[9px] uppercase tracking-[0.16em] text-muted-foreground/70">
-            v6.3.0 · momento-core worker
+            v6.4.0 · momento-core worker
           </p>
         </div>
       </aside>

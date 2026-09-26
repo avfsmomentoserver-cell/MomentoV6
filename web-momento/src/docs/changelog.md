@@ -1,5 +1,25 @@
 # Changelog
 
+## v6.4.0 — full intelligence platform
+
+- **TradingView-grade charts** (`TvChart`, lightweight-charts v5), used by Market, Momentum Lab, the consumer charts, MomentoFX and Chart Lab:
+  - candles, Heikin-Ashi, bars, line and area; log scale; Aviator hue mode;
+  - EMA 20/50, Bollinger Bands, volume and RSI;
+  - trend, horizontal, rectangle and Fibonacci drawings that persist;
+  - zoom, fit, reset, snapshot, fullscreen, and a projection fan.
+- **Command Center:** the forecast is top-most, then the AI summary, then the other forecasts. A 100-round scrollable feed sits top right.
+- **Realtime:** a 2.5 s pulse invalidates every view on each new round. The realtime tier computes on top of the scheduled deep tier.
+- **Scheduler page:** deep jobs (DNA, linguistics, vocabulary, shape, reconstruct, AI) with editable parameters and intervals.
+- **ShapeShifter Darkboard:** named, drawn shapes at five windows, the projected shape fan, and a shape atlas with follow-through lifts.
+- **Chart Lab:** chart predictions decomputed into rounds with clock ETAs, a walk-forward backtest and a live ledger.
+- **DNA Hunter and Pattern DNA:** four alphabets, k up to 12, any target range, range filters, multiple-testing verdicts and scheduled wide scans.
+- **Linguistics and Vocabulary:** rewritten, with a sentence stream, grammar, tone and out-of-sample phrase discovery.
+- **Eagle Eye:** V5 structure with the full history, Aviator colours, 12 filters, paging and CSV/JSON export.
+- **Investigation Suite:** round forensics, range tests (KS and z), and gaps and reconstruction. Backtests are a tab.
+- **Session-gap reconstruction:** cadence-fitted, labelled `reconstructed`, never scored, toggleable and clearable.
+- **Seeding:** Spribe Top-rounds import (Day/Month/Year · X/Win/Rounds, timezone aware, anchors), a span seeder, and automatic priming after a .db import.
+- **AI forecast summary** over every metric via Entrim (OpenAI-compatible). The key comes from `ENTRIM_API_KEY` or a masked setting.
+
 ## v6.3.0 — full-intelligence next-round forecast
 
 - New `functions/intelligence.ts`: the V5.01-backtd forecast engine is back on the next-round hero, with Markov 7-state transitions, empirical percentiles, DNA analogues, V5 ladder release, band exhaustion, the logistic ML ensemble, V5 regime and gap/swing, and the V5 candidate tilts. It is fused with every v6 engine (band model, earned per-round ensemble, Mega Pressure, Moonshot scanner and research, ShapeShifters, FX lab, range momentum) as an 8-engine Bayesian mixture.

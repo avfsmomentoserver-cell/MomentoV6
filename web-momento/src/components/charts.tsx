@@ -1,4 +1,5 @@
 import { memo } from "react";
+import { TvChart, type TvProjectionPoint } from "@/components/tv/TvChart";
 import {
   Area,
   AreaChart,
@@ -108,27 +109,7 @@ export const PointsChart = memo(function PointsChart({ points, height = 260 }: {
   );
 });
 
-/** Minimal OHLC candles rendered as bars (high-low wick + open-close body). */
-export const Candles = memo(function Candles({ candles, height = 300 }: { candles: { t: number; o: number; h: number; l: number; c: number; n?: number }[]; height?: number }) {
-  const max = Math.max(...candles.map((c) => c.h), 2);
-  return (
-    <div className="relative" style={{ height }}>
-      <div className="flex h-full items-end gap-[2px]">
-        {candles.map((c, i) => {
-          const up = c.c >= c.o;
-          const color = up ? "#34D399" : "#F43F5E";
-          const bodyTop = 100 - (Math.max(c.o, c.c) / max) * 100;
-          const bodyBottom = 100 - (Math.min(c.o, c.c) / max) * 100;
-          const wickTop = 100 - (c.h / max) * 100;
-          const wickBottom = 100 - (c.l / max) * 100;
-          return (
-            <div key={i} className="group relative flex-1" title={`${new Date(c.t * 1000).toLocaleTimeString()} · O ${c.o.toFixed(2)} H ${c.h.toFixed(2)} L ${c.l.toFixed(2)} C ${c.c.toFixed(2)} (n=${c.n})`}>
-              <div className="absolute inset-x-[45%]" style={{ top: `${wickTop}%`, height: `${wickBottom - wickTop}%`, background: color, opacity: 0.55 }} />
-              <div className="absolute inset-x-0" style={{ top: `${bodyTop}%`, height: `${Math.max(1, bodyBottom - bodyTop)}%`, background: color }} />
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
+/** OHLC candles — now the TradingView-grade TvChart (type switch, log scale, indicators, drawings, zoom, fullscreen). */
+export const Candles = memo(function Candles({ candles, height = 300, storageKey = "candles", projection }: { candles: { t: number; o: number; h: number; l: number; c: number; n?: number }[]; height?: number; storageKey?: string; projection?: TvProjectionPoint[] }) {
+  return <TvChart candles={candles} height={height} storageKey={storageKey} projection={projection} />;
 });

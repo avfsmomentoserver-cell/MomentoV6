@@ -8,6 +8,9 @@ import { fmtInt, fmtMult, fmtPct, timeAgo } from "@/lib/format";
 import type { AccuracyOverview, Analysis, NextRoundForecast, PipelineForecast, Pressure, RoundDto } from "@/lib/types";
 import { Bar, Loading, MetricGrid, PageHeader, Panel, StatTile } from "@/components/bits";
 import { DownloadSourceButton } from "@/components/DownloadSourceButton";
+import { RoundsFeed } from "@/components/v64/RoundsFeed";
+import { AiSummaryCard } from "@/components/v64/AiSummaryCard";
+import { ShapeMiniCard } from "@/components/v64/ShapeViz";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -46,7 +49,7 @@ export default function CommandCenter() {
   });
   const latest = useQuery({
     queryKey: ["rounds", "latest", "cc"],
-    queryFn: () => api.get<{ rounds: RoundDto[] }>("/api/v1/rounds/latest?limit=24"),
+    queryFn: () => api.get<{ rounds: RoundDto[] }>("/api/v1/rounds/latest?limit=100"),
     refetchInterval: liveMode ? 4_000 : 10_000,
   });
   const feed = useQuery({
@@ -151,16 +154,11 @@ export default function CommandCenter() {
         }
       />
 
-      <MetricGrid>
-        <StatTile label="Last round" value={fmtMult(last?.multiplier)} sub={`${last?.source ?? "—"} · ${timeAgo(last?.ts)}`} pulse tone={last && last.multiplier >= 10 ? "warn" : "signal"} />
-        <StatTile label="P(≥ 2×)" value={fmtPct(a.exceedance.find((e) => e.threshold === 2)?.rate)} sub={`CI ${fmtPct(a.exceedance.find((e) => e.threshold === 2)?.ci[0], 1)}–${fmtPct(a.exceedance.find((e) => e.threshold === 2)?.ci[1], 1)}`} />
-        <StatTile label="Tail pressure" value={`${a.pressure.overallPressure}%`} sub={a.pressure.status} tone={a.pressure.overallPressure >= 65 ? "bad" : a.pressure.overallPressure >= 40 ? "warn" : "good"} />
-        <StatTile label="Dry streak" value={a.streaks.currentKind === "below" ? `${a.streaks.current}` : "broken"} sub={`max ${a.streaks.maxBelow} · p(contin) ${fmtPct(a.streaks.markov.pStayBelow, 0)}`} tone={a.streaks.currentKind === "below" && a.streaks.current > 6 ? "warn" : "default"} />
-      </MetricGrid>
 
       <div className="grid gap-3 xl:grid-cols-3">
+        <div className="space-y-3 xl:col-span-2">
         <Card
-          className="border-primary/30 bg-primary/[0.04] shadow-[0_0_0_1px_hsl(var(--primary)/0.08),0_0_28px_-8px_hsl(var(--primary)/0.25)] xl:col-span-2"
+          className="border-primary/30 bg-primary/[0.04] shadow-[0_0_0_1px_hsl(var(--primary)/0.08),0_0_28px_-8px_hsl(var(--primary)/0.25)]"
           aria-label="Next-round forecast"
         >
           <div className="flex items-center justify-between gap-3 border-b border-border/60 px-4 py-3">
@@ -338,26 +336,21 @@ export default function CommandCenter() {
             </div>
           </CardContent>
         </Card>
+          <AiSummaryCard />
+        </div>
+        <RoundsFeed className="xl:row-span-1" height={640} />
+      </div>
 
-        <Panel title="Latest rounds" right={<Link to="/dashboard/market" className="text-[11px] text-primary hover:underline">Market →</Link>}>
-          <div className="flex h-[188px] flex-col gap-1.5 overflow-y-auto pr-1">
-            {(latest.data?.rounds ?? []).map((r, i) => (
-              <div
-                key={r.id}
-                className={cn(
-                  "flex shrink-0 items-center justify-between rounded-md border px-2 py-1",
-                  i === 0 ? "border-primary/40 bg-primary/5" : "border-border/60 bg-background/40",
-                )}
-              >
-                <span className="font-data text-[12px] font-semibold" style={{ color: r.multiplier >= 100 ? "#F43F5E" : r.multiplier >= 10 ? "#F59E0B" : r.multiplier >= 2 ? "#8B5CF6" : "#3B82F6" }}>
-                  {r.multiplier.toFixed(2)}×
-                </span>
-                <span className="text-[10.5px] text-muted-foreground">{r.source ?? "—"} · {timeAgo(r.ts)}</span>
-              </div>
-            ))}
-            {!latest.data && <p className="py-4 text-center text-[12px] text-muted-foreground">—</p>}
-          </div>
-        </Panel>
+      <MetricGrid>
+        <StatTile label="Last round" value={fmtMult(last?.multiplier)} sub={`${last?.source ?? "—"} · ${timeAgo(last?.ts)}`} pulse tone={last && last.multiplier >= 10 ? "warn" : "signal"} />
+        <StatTile label="P(≥ 2×)" value={fmtPct(a.exceedance.find((e) => e.threshold === 2)?.rate)} sub={`CI ${fmtPct(a.exceedance.find((e) => e.threshold === 2)?.ci[0], 1)}–${fmtPct(a.exceedance.find((e) => e.threshold === 2)?.ci[1], 1)}`} />
+        <StatTile label="Tail pressure" value={`${a.pressure.overallPressure}%`} sub={a.pressure.status} tone={a.pressure.overallPressure >= 65 ? "bad" : a.pressure.overallPressure >= 40 ? "warn" : "good"} />
+        <StatTile label="Dry streak" value={a.streaks.currentKind === "below" ? `${a.streaks.current}` : "broken"} sub={`max ${a.streaks.maxBelow} · p(contin) ${fmtPct(a.streaks.markov.pStayBelow, 0)}`} tone={a.streaks.currentKind === "below" && a.streaks.current > 6 ? "warn" : "default"} />
+      </MetricGrid>
+
+      <div className="grid gap-3 xl:grid-cols-3">
+        <ShapeMiniCard />
+
 
         <Panel title="Accuracy engine — live verification" right={<Gauge className="h-4 w-4 text-primary" />}>
           <div className="space-y-2 text-[13px]">

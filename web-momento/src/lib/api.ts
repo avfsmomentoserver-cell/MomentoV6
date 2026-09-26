@@ -1,6 +1,6 @@
 // Typed API client for the Momento backend (Cloudflare Worker).
 
-const BASE = import.meta.env.EXPO_PUBLIC_RORK_FUNCTIONS_URL ?? "https://prosync-backend.rork.app";
+export const BASE = import.meta.env.EXPO_PUBLIC_RORK_FUNCTIONS_URL ?? "https://prosync-backend.rork.app";
 const TOKEN_KEY = "momento.token";
 
 export function getToken(): string | null {

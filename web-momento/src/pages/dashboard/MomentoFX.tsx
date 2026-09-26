@@ -3,7 +3,7 @@ import { api } from "@/lib/api";
 import { fmtDateTime, fmtMult } from "@/lib/format";
 import type { Analysis, Candle, RoundDto } from "@/lib/types";
 import { Loading, MetricGrid, PageHeader, Panel, StatTile } from "@/components/bits";
-import { TrendLine } from "@/components/charts";
+import { TvChart } from "@/components/tv/TvChart";
 
 /** MomentoFX — the forex-style research interface over crash series (v1 surface). */
 export default function MomentoFX() {
@@ -39,8 +39,8 @@ export default function MomentoFX() {
         <StatTile label="Session" value={a.overview.sessions > 0 ? `#${a.overview.sessions}` : "—"} sub="30-min gap rule" />
       </MetricGrid>
 
-      <Panel title="Close series (5m)">
-        <TrendLine data={data} height={300} />
+      <Panel title="5-minute candles — TradingView workbench">
+        <TvChart candles={candles.data?.candles ?? []} height={380} storageKey="fx-5m" defaultIndicators={["ema20", "ema50", "volume"]} />
       </Panel>
 
       <Panel title="Indicator strip">

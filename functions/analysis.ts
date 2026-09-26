@@ -10,6 +10,8 @@ export interface Round {
   color: string | null;
   source: string;
   sessionId: number | null;
+  /** observed | anchor (real top round, minute-precise time) | seeded (span seeder) | reconstructed (labelled gap fill) */
+  origin?: string;
 }
 
 export const THRESHOLDS = [1.2, 1.5, 2, 3, 5, 10, 20, 50, 100, 250, 500, 1000] as const;
