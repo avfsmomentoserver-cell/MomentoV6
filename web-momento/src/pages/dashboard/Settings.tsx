@@ -115,7 +115,7 @@ export default function Settings() {
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Backend</span>
-                <span className="font-data">momento-core v6.2.0</span>
+                <span className="font-data">momento-core v6.3.0</span>
               </div>
               {user && (
                 <Button variant="outline" size="sm" className="mt-2" onClick={() => { logout(); }}>

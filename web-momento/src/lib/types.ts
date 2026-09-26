@@ -444,7 +444,7 @@ export interface NextRoundForecast {
   source: string;
   generatedAt: string;
   cadenceMs: number;
-  state: "Moonshot" | "Ignition" | "Collapse" | "Exhaustion" | "Bait" | "Shelf";
+  state: MarketState;
   confidence: number;
   confidenceLabel: "HIGH" | "MEDIUM" | "LOW";
   expectedMultiplier: number;
@@ -459,6 +459,146 @@ export interface NextRoundForecast {
   lastRound: { multiplier: number; band: string };
   components: (ProbabilityComponent & { mid: number })[];
   note: string;
+  /** v6.3 full-intelligence fields (absent on the legacy /next-round/band payload) */
+  engine?: "full-intelligence-v6.3";
+  predictedState?: MarketState;
+  predictedBand?: string;
+  horizon?: number;
+  stateConviction?: number;
+  stateScores?: Record<MarketState, number>;
+  candidates?: IntelCandidate[];
+  transitionMatrix?: Record<MarketState, Record<MarketState, number>>;
+  blend?: Record<string, number>;
+  intelligence?: IntelligenceBlock;
+}
+
+// ---- v6.3: full-intelligence forecast ------------------------------------
+
+export type MarketState = "Normal" | "Moonshot" | "Ignition" | "Collapse" | "Exhaustion" | "Bait" | "Shelf";
+
+export interface IntelCandidate {
+  state: MarketState;
+  probability: number;
+  rangeLo: number;
+  rangeHi: number;
+  survival: number;
+  label: string;
+  color: string;
+  note: string;
+}
+
+export interface IntelComponent {
+  key: string;
+  label: string;
+  weight: number;
+  prior: number;
+  mid: number;
+  p2: number;
+  p10: number;
+  distribution: number[];
+  logLoss: number | null;
+  samples: number;
+}
+
+export interface IntelSignal {
+  engine: string;
+  reading: string;
+  direction: number;
+  note: string;
+}
+
+export interface IntelHorizonRow {
+  threshold: number;
+  perRound: number;
+  baseline: number;
+  withinHorizon: number;
+  etaMedian: number | null;
+  etaP90: number | null;
+  currentRun: number;
+}
+
+export interface IntelExhaustionBand {
+  threshold: number;
+  rate: number;
+  expectedGap: number | null;
+  roundsSince: number;
+  overdueRatio: number;
+  exhaustion: number;
+  status: "overdue" | "due" | "fresh";
+}
+
+export interface IntelligenceBlock {
+  components: IntelComponent[];
+  agreement: number;
+  calibratedHitRate: number | null;
+  skillPct: number | null;
+  calibrationSample: number;
+  signals: IntelSignal[];
+  dna: {
+    signature: string[];
+    matchCount: number;
+    confidence: number;
+    outcomes: { count: number; median: number; p75: number; p90: number; over2: number; over5: number; over10: number } | null;
+    matches: { index: number; similarity: number; next: number }[];
+  };
+  exhaustion: { bands: IntelExhaustionBand[]; mostOverdue: IntelExhaustionBand | null };
+  ladders: {
+    ladderCount: number;
+    moonshotProbability: number;
+    releaseCorrelation: number;
+    etaToMoonshot: number;
+    pressureScore: number;
+    releasePrediction: string;
+    currentLadder: { type: string; length: number } | null;
+    compressionNearRelease: boolean;
+    etaAdjustment: number;
+  };
+  ml: {
+    features: Record<string, number>;
+    predictions: Record<string, { model: number; empirical: number; blended: number; edge: number }>;
+  };
+  percentiles: Record<string, number>;
+  horizonOutlook: IntelHorizonRow[];
+  regime: { label: string; volatility: number; drift: number };
+  independence: { chiSquare: number; independent: boolean };
+  honesty: string;
+}
+
+export interface IntelCalibrationRow {
+  id: number;
+  state: string;
+  expected: number;
+  range_lo: number;
+  range_hi: number;
+  reach: number;
+  confidence: number;
+  correction: number;
+  dist: number[] | null;
+  weights: Record<string, number> | null;
+  comp_loss: Record<string, number> | null;
+  mix_loss: number | null;
+  base_loss: number | null;
+  actual: number | null;
+  verdict: string;
+  reason: string;
+  band_err: number;
+  log_err: number;
+  created_ms: number;
+}
+
+export interface IntelCalibrationSummary {
+  rows: IntelCalibrationRow[];
+  verdicts: Record<string, number>;
+  ledger: {
+    logLoss: Record<string, number>;
+    sample: number;
+    mixLogLoss: number | null;
+    baseLogLoss: number | null;
+    hitRate: number | null;
+  };
+  correction: number;
+  correctionSample: number;
+  components: string[];
 }
 
 export interface RoundCalibration {

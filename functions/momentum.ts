@@ -90,10 +90,11 @@ export function hitPoints(rounds: Round[], bucketMs = 300_000): HitPointBucket[]
     .map(([t, c]) => ({
       t,
       count: c.mults.length,
-      open: r2(c.mults[0]),
-      close: r2(c.mults[c.mults.length - 1]),
-      high: r2(Math.max(...c.mults)),
-      low: r2(Math.min(...c.mults)),
+      // buckets that only received spill-over energy from an earlier mega hit have no rounds
+      open: c.mults.length ? r2(c.mults[0]) : 0,
+      close: c.mults.length ? r2(c.mults[c.mults.length - 1]) : 0,
+      high: c.mults.length ? r2(Math.max(...c.mults)) : 0,
+      low: c.mults.length ? r2(Math.min(...c.mults)) : 0,
       rawEnergy: r2(sum(c.mults)),
       energy: r2(c.energy),
       megaCount: c.mega,

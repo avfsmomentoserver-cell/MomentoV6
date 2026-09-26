@@ -116,7 +116,7 @@ export default function Landing() {
 
       <footer className="border-t border-border/60 py-6">
         <p className="mx-auto max-w-6xl px-5 font-data text-[10px] uppercase tracking-[0.2em] text-muted-foreground/60">
-          momento platform v6.2.0 · graph ite aurora · built {new Date().getFullYear()}
+          momento platform v6.3.0 · graph ite aurora · built {new Date().getFullYear()}
         </p>
       </footer>
     </div>

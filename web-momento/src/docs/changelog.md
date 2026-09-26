@@ -1,5 +1,16 @@
 # Changelog
 
+## v6.3.0 — full-intelligence next-round forecast
+
+- New `functions/intelligence.ts`: the V5.01-backtd forecast engine is back on the next-round hero, with Markov 7-state transitions, empirical percentiles, DNA analogues, V5 ladder release, band exhaustion, the logistic ML ensemble, V5 regime and gap/swing, and the V5 candidate tilts. It is fused with every v6 engine (band model, earned per-round ensemble, Mega Pressure, Moonshot scanner and research, ShapeShifters, FX lab, range momentum) as an 8-engine Bayesian mixture.
+- Mixture weights are earned: every round is scored against the forecast that existed before it landed (`intel_calibrations` ledger, per-engine band log-loss). Confidence is capped at MEDIUM unless the mixture beats the measured baseline by at least 3%.
+- `/api/v1/pipeline/next-round` now returns the full-intelligence forecast (a superset of the v6.2 payload). The v6.2 band model stays at `/api/v1/pipeline/next-round/band`. New endpoints: `/api/v1/intelligence/forecast`, `/api/v1/intelligence/calibrations`, and `POST /api/v1/intelligence/recalibrate`.
+- New Full Intelligence page (`/dashboard/intelligence`): candidates, transition matrix, engine weights and distributions, h+5 outlook, DNA, ML, signal layer, exhaustion and ladders, and the calibration ledger. The Command Center hero now shows the top-3 candidates, the h+5 outlook, engine weights, and skill vs baseline.
+- Fixes:
+  - `percentileWait` had a sign error, so every p90 ETA returned 1.
+  - `hitPoints` crashed on buckets that received only mega-hit spill-over energy.
+  - The local dev SQL shim now reports `rowsWritten`, so calibration runs locally, and it debounces DB persistence (bulk ingest went from minutes to seconds).
+
 ## v5.0.0 — coordinated professional platform (this release)
 
 The full rebuild. One backend, one shell, every archived feature and link carried forward.

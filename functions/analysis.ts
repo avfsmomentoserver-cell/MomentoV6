@@ -39,7 +39,8 @@ export function medianWait(rate: number): number | null {
 
 export function percentileWait(rate: number, q: number): number | null {
   if (rate <= 0 || rate >= 1) return null;
-  return Math.max(1, Math.ceil(Math.log(1 - q) / -Math.log(1 - rate)));
+  // rounds until P(at least one hit) reaches q: 1-(1-p)^k >= q  =>  k = ln(1-q)/ln(1-p)
+  return Math.max(1, Math.ceil(Math.log(1 - q) / Math.log(1 - rate)));
 }
 
 export function quantile(sorted: number[], q: number): number {

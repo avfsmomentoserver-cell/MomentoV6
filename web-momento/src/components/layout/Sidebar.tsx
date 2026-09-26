@@ -63,6 +63,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: "Intelligence",
     items: [
+      { to: "/dashboard/intelligence", label: "Full Intelligence", icon: Sparkles },
       { to: "/dashboard/moonshot", label: "Moonshot Finder", icon: Rocket },
       { to: "/dashboard/fx-lab", label: "FX Analysis Lab", icon: Radar },
       { to: "/dashboard/dna", label: "DNA Hunter", icon: Dna },
@@ -175,7 +176,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
             </span>
             <span className="leading-tight">
               <span className="block font-data text-[11px] font-bold uppercase tracking-[0.18em] text-foreground">Momento</span>
-              <span className="block text-[10px] text-muted-foreground">Platform v6.2</span>
+              <span className="block text-[10px] text-muted-foreground">Platform v6.3</span>
             </span>
           </Link>
           <button
@@ -211,7 +212,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
 
         <div className="border-t border-sidebar-border px-4 py-3">
           <p className="font-data text-[9px] uppercase tracking-[0.16em] text-muted-foreground/70">
-            v6.2.0 · momento-core worker
+            v6.3.0 · momento-core worker
           </p>
         </div>
       </aside>

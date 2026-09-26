@@ -48,6 +48,15 @@ class LocalStorage {
     }
   }
 
+  /** Debounced persist — exporting the whole DB after every INSERT made bulk ingest O(n²). */
+  _scheduleSave() {
+    if (this._saveTimer) return;
+    this._saveTimer = setTimeout(() => {
+      this._saveTimer = null;
+      this._save();
+    }, 250);
+  }
+
   _save() {
     if (!this.db) return;
     try {
@@ -70,7 +79,8 @@ class LocalStorage {
         if (params.length === 0 && !isSelect) {
           // No params and not SELECT - use db.exec for DDL/DML multi-statement support
           db.exec(sql);
-          return { toArray: () => [] };
+          const written = db.getRowsModified();
+          return { toArray: () => [], rowsWritten: written };
         }
         
         // For SELECT or parameterized queries, use prepared statements
@@ -83,8 +93,9 @@ class LocalStorage {
           rows.push(stmt.getAsObject());
         }
         stmt.free();
-        if (!isSelect) self._save();
-        return { toArray: () => rows };
+        const rowsWritten = isSelect ? 0 : db.getRowsModified();
+        if (!isSelect) self._scheduleSave();
+        return { toArray: () => rows, rowsWritten };
       },
     };
   }

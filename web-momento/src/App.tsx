@@ -27,6 +27,7 @@ import DnaHunter from "@/pages/dashboard/DnaHunter";
 import MegaPressure from "@/pages/dashboard/MegaPressure";
 import PatternDna from "@/pages/dashboard/PatternDna";
 import ForecastStudio from "@/pages/dashboard/ForecastStudio";
+import FullIntelligence from "@/pages/dashboard/FullIntelligence";
 import Linguistics from "@/pages/dashboard/Linguistics";
 import Vocabulary from "@/pages/dashboard/Vocabulary";
 import Investigation from "@/pages/dashboard/Investigation";
@@ -93,6 +94,7 @@ const App = () => (
               <Route path="/dashboard/mega-pressure" element={<MegaPressure />} />
               <Route path="/dashboard/pattern-dna" element={<PatternDna />} />
               <Route path="/dashboard/studio" element={<ForecastStudio />} />
+              <Route path="/dashboard/intelligence" element={<FullIntelligence />} />
               <Route path="/dashboard/linguistics" element={<Linguistics />} />
               <Route path="/dashboard/vocabulary" element={<Vocabulary />} />
               <Route path="/dashboard/investigation" element={<Investigation />} />

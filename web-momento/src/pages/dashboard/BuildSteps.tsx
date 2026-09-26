@@ -26,7 +26,7 @@ export default function BuildSteps() {
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <StatTile label="Steps" value={steps.data?.steps.length ?? 0} sub="implementation record" />
         <StatTile label="Status" value={steps.data?.steps.every((s) => s.status === "done") ? "complete" : "in progress"} tone="good" />
-        <StatTile label="Bundle" value="v6.2.0" sub="versioned handover" tone="signal" />
+        <StatTile label="Bundle" value="v6.3.0" sub="versioned handover" tone="signal" />
         <StatTile label="Docs shipped" value="17" sub="inside the bundle" />
       </div>
       <Panel>

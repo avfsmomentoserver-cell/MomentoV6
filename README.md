@@ -1,6 +1,6 @@
 # Momento Platform
 
-v6.2.0 — forex analysis + honest prediction pipeline + compounding accuracy engine.
+v6.3.0 — full-intelligence next-round forecast (V5.01-backtd engine × every v6 engine, earned mixture weights) + forex analysis + honest prediction pipeline + compounding accuracy engine.
 
 ## Quickstart
 

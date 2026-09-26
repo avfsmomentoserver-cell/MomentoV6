@@ -1,5 +1,5 @@
 # MOMENTO PLATFORM — FULL SOURCE BUNDLE
-Version: 6.2.0
+Version: 6.3.0
 Generated: 2026-09-21T16:55:31.063Z
 
 Contents (176 files, sha256 per file):

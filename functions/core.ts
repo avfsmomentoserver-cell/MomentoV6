@@ -58,8 +58,16 @@ import {
   rangeForecast,
   rangeMomentum,
 } from "./momentum";
+import {
+  COMPONENTS as INTEL_COMPONENTS,
+  bandLogLoss,
+  fullIntelligenceForecast,
+  scoreIntelForecast,
+  type FullIntelligenceForecast,
+  type IntelWeights,
+} from "./intelligence";
 
-export const VERSION = "6.2.0";
+export const VERSION = "6.3.0";
 
 type Rows = Record<string, unknown>;
 
@@ -328,6 +336,31 @@ export class MomentoCore extends DurableObject {
         resolved_ms INTEGER
       );
       CREATE INDEX IF NOT EXISTS idx_round_cal ON round_calibrations (resolved_ms, created_ms);
+      CREATE TABLE IF NOT EXISTS intel_calibrations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source TEXT NOT NULL DEFAULT 'all',
+        round_id INTEGER,
+        state TEXT NOT NULL,
+        expected REAL NOT NULL,
+        range_lo REAL NOT NULL,
+        range_hi REAL NOT NULL,
+        reach REAL NOT NULL,
+        confidence REAL NOT NULL,
+        correction REAL NOT NULL DEFAULT 0,
+        dist TEXT,
+        weights TEXT,
+        comp_loss TEXT,
+        mix_loss REAL,
+        base_loss REAL,
+        actual REAL,
+        verdict TEXT,
+        reason TEXT,
+        band_err INTEGER,
+        log_err REAL,
+        created_ms INTEGER NOT NULL,
+        resolved_ms INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_intel_cal ON intel_calibrations (created_ms);
     `);
   }
 
@@ -1012,6 +1045,129 @@ export class MomentoCore extends DurableObject {
       this.updateBandCorrection();
       console.log(`[momento-v6] calibration: ${scored} rounds scored (${existing.n ? "incremental" : "backtest"})`);
     }
+    try {
+      this.calibrateIntel(all);
+    } catch (e) {
+      console.error("intel calibration failed", e instanceof Error ? e.message : String(e));
+    }
+    return scored;
+  }
+
+  // ------------------------------------------- full-intelligence calibration
+  //
+  // Every round is scored against the full-intelligence forecast that existed
+  // BEFORE it landed. Besides the loose verdict, each engine's own next-round
+  // distribution is log-scored on the band that landed; the trailing mean
+  // log-loss per engine becomes its earned mixture weight (Bayesian model
+  // averaging with floors), so engines that stop paying lose weight.
+
+  private intelLedgerCache: { key: string; value: IntelWeights } | null = null;
+
+  /** Trailing per-engine log-loss, mixture/base log-loss and loose hit rate. */
+  private intelLedger(window = 200): IntelWeights {
+    const sql = this.ctx.storage.sql;
+    const stamp = sql.exec("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS id FROM intel_calibrations").toArray()[0] as { n: number; id: number };
+    const key = `${stamp.n}:${stamp.id}:${window}`;
+    if (this.intelLedgerCache?.key === key) return this.intelLedgerCache.value;
+    const rows = sql
+      .exec("SELECT comp_loss, mix_loss, base_loss, verdict FROM intel_calibrations WHERE resolved_ms IS NOT NULL ORDER BY created_ms DESC LIMIT ?", window)
+      .toArray() as Rows[];
+    const sums: Record<string, number> = {};
+    let mix = 0, base = 0, hits = 0;
+    for (const r of rows) {
+      const cl = r.comp_loss ? (JSON.parse(r.comp_loss as string) as Record<string, number>) : {};
+      for (const [k, v] of Object.entries(cl)) sums[k] = (sums[k] ?? 0) + v;
+      mix += (r.mix_loss as number) ?? 0;
+      base += (r.base_loss as number) ?? 0;
+      if (r.verdict === "hit" || r.verdict === "adjacent") hits++;
+    }
+    const n = rows.length;
+    const logLoss: Record<string, number> = {};
+    if (n) for (const [k, v] of Object.entries(sums)) logLoss[k] = v / n;
+    const value: IntelWeights = {
+      weights: {},
+      logLoss,
+      sample: n,
+      mixLogLoss: n ? mix / n : null,
+      baseLogLoss: n ? base / n : null,
+      hitRate: n ? hits / n : null,
+    };
+    this.intelLedgerCache = { key, value };
+    return value;
+  }
+
+  /** Bounded log-bias correction of the mixture point estimate (trailing window). */
+  private intelCorrection(): { value: number; sampleSize: number } {
+    const cfg = this.calibrationConfig();
+    const rows = this.ctx.storage.sql
+      .exec("SELECT log_err FROM intel_calibrations WHERE resolved_ms IS NOT NULL ORDER BY created_ms DESC LIMIT ?", cfg.window)
+      .toArray() as Rows[];
+    const total = (this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM intel_calibrations").toArray()[0] as { n: number }).n;
+    if (rows.length < cfg.minSample) return { value: 0, sampleSize: total };
+    // median, not mean: the point estimate is the mixture MEDIAN, and on a
+    // heavy-tailed payout the mean log error is positive even when the median
+    // is perfectly calibrated.
+    const errs = rows.map((r) => (r.log_err as number) ?? 0).sort((a, b) => a - b);
+    const mid = errs.length % 2 ? errs[(errs.length - 1) / 2] : (errs[errs.length / 2 - 1] + errs[errs.length / 2]) / 2;
+    return { value: Math.max(-1.5, Math.min(1.5, mid)), sampleSize: total };
+  }
+
+  /** Build the live full-intelligence forecast with the current ledger + rectification. */
+  private intelForecast(rounds: Round[], source: string): FullIntelligenceForecast {
+    const corr = this.intelCorrection();
+    return fullIntelligenceForecast(rounds, source, {
+      ledger: this.intelLedger(),
+      pipelineWeights: this.weightsMap(),
+      correction: corr.value || undefined,
+      correctionSample: corr.sampleSize,
+    });
+  }
+
+  private calibrateIntel(all: Round[]): number {
+    const cfg = this.calibrationConfig();
+    if (!cfg.enabled || all.length < 150) return 0;
+    const sql = this.ctx.storage.sql;
+    const lastRow = sql.exec("SELECT COUNT(*) AS n, MAX(created_ms) AS last FROM intel_calibrations").toArray()[0] as { n: number; last: number | null };
+    const maxBacktest = clampInt(this.setting("intel_backtest_rounds") ?? "150", 20, 1000, 150);
+    let startIdx: number;
+    if (!lastRow.n) startIdx = Math.max(100, all.length - maxBacktest);
+    else {
+      startIdx = all.length;
+      while (startIdx > 0 && all[startIdx - 1].tsMs > (lastRow.last ?? 0)) startIdx--;
+      // cap catch-up work on bulk imports: score only the most recent rounds
+      startIdx = Math.max(startIdx, all.length - 300, 100);
+    }
+    let scored = 0;
+    const weights = this.weightsMap();
+    for (let i = startIdx; i < all.length; i++) {
+      const target = all[i];
+      const history = all.slice(0, i);
+      const ledger = this.intelLedger();
+      const corr = this.intelCorrection();
+      const f = fullIntelligenceForecast(history, "all", {
+        ledger,
+        pipelineWeights: weights,
+        correction: corr.value || undefined,
+        correctionSample: corr.sampleSize,
+      });
+      // score the raw (uncorrected) point estimate so rectification measures drift, not itself
+      const rawF = { ...f, expectedMultiplier: f.baseMultiplier };
+      const s = scoreIntelForecast(rawF, target.multiplier);
+      const compLoss: Record<string, number> = {};
+      for (const c of f.intelligence.components) compLoss[c.key] = +bandLogLoss(c.distribution, target.multiplier).toFixed(5);
+      const mixLoss = bandLogLoss(f.distribution.map((d) => d.probability), target.multiplier);
+      sql.exec(
+        `INSERT INTO intel_calibrations (source, round_id, state, expected, range_lo, range_hi, reach, confidence, correction, dist, weights, comp_loss, mix_loss, base_loss, actual, verdict, reason, band_err, log_err, created_ms, resolved_ms)
+         VALUES ('all', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        target.id, f.state, f.expectedMultiplier, f.rangeLo, f.rangeHi, f.moonshotReach, f.confidence, corr.value,
+        JSON.stringify(f.distribution.map((d) => d.probability)),
+        JSON.stringify(Object.fromEntries(f.intelligence.components.map((c) => [c.key, c.weight]))),
+        JSON.stringify(compLoss), +mixLoss.toFixed(5), compLoss.baseline ?? null,
+        target.multiplier, s.verdict, s.reason, s.bandErr, +s.logErr.toFixed(5), target.tsMs, target.tsMs,
+      );
+      scored++;
+    }
+    if (scored) console.log(`[momento-v6] intel calibration: ${scored} rounds scored (${lastRow.n ? "incremental" : "backtest"})`);
     return scored;
   }
 
@@ -1795,11 +1951,48 @@ export class MomentoCore extends DurableObject {
       const base = pipelineForecast(rounds, source ?? "all", this.weightsMap());
       return ok({ ...base, inverted: invertedForecast(rounds, this.weightsMap()) });
     }
-    if (path === "/api/v1/pipeline/next-round" && method === "GET") {
+    // v6.3: the next-round hero is the full-intelligence forecast (V5.01-backtd
+    // blend + every v6 engine, earned mixture weights). The v6.2 band model
+    // stays available at /next-round/band for comparison.
+    if ((path === "/api/v1/pipeline/next-round" || path === "/api/v1/intelligence/forecast") && method === "GET") {
+      const source = q.get("source");
+      const rounds = this.roundsFor(source);
+      if (rounds.length < 8) return fail("need at least 8 rounds for a forecast", 409);
+      return ok(this.intelForecast(rounds, source ?? "all"));
+    }
+    if (path === "/api/v1/pipeline/next-round/band" && method === "GET") {
       const source = q.get("source");
       const rounds = this.roundsFor(source);
       const corr = this.bandCorrection();
       return ok(nextRoundForecast(rounds, source ?? "all", this.weightsMap(), corr.value || undefined, corr.sampleSize));
+    }
+    if (path === "/api/v1/intelligence/calibrations" && method === "GET") {
+      const rows = (sql
+        .exec("SELECT * FROM intel_calibrations ORDER BY created_ms DESC LIMIT ?", clampInt(q.get("limit") ?? "50", 1, 500, 50))
+        .toArray() as Rows[]).map((r) => ({
+          ...r,
+          dist: r.dist ? JSON.parse(r.dist as string) : null,
+          weights: r.weights ? JSON.parse(r.weights as string) : null,
+          comp_loss: r.comp_loss ? JSON.parse(r.comp_loss as string) : null,
+        }));
+      const all = sql.exec("SELECT verdict, COUNT(*) AS n FROM intel_calibrations GROUP BY verdict").toArray() as Rows[];
+      const ledger = this.intelLedger();
+      const corr = this.intelCorrection();
+      return ok({
+        rows,
+        verdicts: Object.fromEntries(all.map((r) => [r.verdict as string, r.n as number])),
+        ledger,
+        correction: corr.value,
+        correctionSample: corr.sampleSize,
+        components: INTEL_COMPONENTS,
+      });
+    }
+    if (path === "/api/v1/intelligence/recalibrate" && method === "POST") {
+      this.requireOperator(request);
+      sql.exec("DELETE FROM intel_calibrations");
+      this.intelLedgerCache = null;
+      const scored = this.calibrateIntel(this.roundsFor(null));
+      return ok({ scored });
     }
     if (path === "/api/v1/pipeline/calibrations" && method === "GET") {
       const rows = (this.ctx.storage.sql

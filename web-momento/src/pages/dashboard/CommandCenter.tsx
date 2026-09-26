@@ -20,6 +20,7 @@ const STATE_COLOR: Record<string, string> = {
   Exhaustion: "#fb923c",
   Collapse: "#f43f5e",
   Shelf: "#94a3b8",
+  Normal: "#8b95b7",
 };
 
 const STATE_CHIP: Record<string, string> = {
@@ -29,6 +30,7 @@ const STATE_CHIP: Record<string, string> = {
   Exhaustion: "border-orange-400/40 bg-orange-400/10 text-orange-300",
   Collapse: "border-rose-400/40 bg-rose-400/10 text-rose-300",
   Shelf: "border-border/70 bg-background/40 text-muted-foreground",
+  Normal: "border-slate-400/40 bg-slate-400/10 text-slate-300",
 };
 
 export default function CommandCenter() {
@@ -166,11 +168,15 @@ export default function CommandCenter() {
               <Telescope className="h-3.5 w-3.5 shrink-0 text-primary" />
               <div className="min-w-0">
                 <h2 className="truncate text-[11px] font-semibold uppercase tracking-[0.16em] text-foreground/90">Forecast</h2>
-                <p className="mt-0.5 truncate text-[11px] text-muted-foreground">Next-round projection · pipeline ensemble</p>
+                <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                  {nr?.intelligence
+                    ? `Next-round projection · full intelligence (${nr.intelligence.components.length} engines, earned weights)`
+                    : "Next-round projection · pipeline ensemble"}
+                </p>
               </div>
             </div>
             <span className="font-data shrink-0 text-[11px] text-muted-foreground">
-              {nr ? `cadence ~${Math.round(nr.cadenceMs / 1000)}s · h+1` : "—"}
+              {nr ? `cadence ~${Math.round(nr.cadenceMs / 1000)}s · h+1${nr.horizon ? ` · outlook h+${nr.horizon}` : ""}` : "—"}
             </span>
           </div>
           <CardContent className="p-4">
@@ -233,12 +239,12 @@ export default function CommandCenter() {
                     <p className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">Next-round distribution by band</p>
                     <div className="flex items-end gap-1" style={{ height: 44 }}>
                       {nr.distribution.map((d) => (
-                        <div key={d.label} className="flex min-w-0 flex-1 flex-col items-center gap-0.5" title={`${d.label}: ${fmtPct(d.probability, 1)}`}>
+                        <div key={d.label} className="flex h-full min-w-0 flex-1 flex-col items-center gap-0.5" title={`${d.label}: ${fmtPct(d.probability, 1)}`}>
                           <div className="flex w-full flex-1 items-end">
                             <div
                               className="w-full rounded-t-sm"
                               style={{
-                                height: `${Math.max(3, d.probability * 100)}%`,
+                                height: `${Math.max(4, (d.probability / Math.max(...nr.distribution.map((x) => x.probability), 0.0001)) * 100)}%`,
                                 background: d.edge >= 10 ? "#F59E0B" : d.edge >= 5 ? "#8B5CF6" : d.edge >= 2 ? "#06B6D4" : "#3B82F6",
                                 opacity: 0.4 + Math.min(0.6, d.probability * 6),
                               }}
@@ -249,16 +255,65 @@ export default function CommandCenter() {
                       ))}
                     </div>
                   </div>
+                  {nr.candidates && (
+                    <div>
+                      <p className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">Markov state candidates</p>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {nr.candidates.slice(0, 3).map((c) => (
+                          <div key={c.state} className="rounded-md border border-border/60 bg-background/40 px-2 py-1.5" title={c.label}>
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="truncate text-[11px] font-medium" style={{ color: STATE_COLOR[c.state] }}>{c.state}</span>
+                              <span className="font-data text-[11px] tabular-nums">{fmtPct(c.probability, 0)}</span>
+                            </div>
+                            <p className="font-data mt-0.5 text-[10px] text-muted-foreground">{fmtMult(c.rangeLo)}–{fmtMult(c.rangeHi)}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {nr.intelligence && (
+                    <div>
+                      <p className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">Outlook · P(hit within {nr.horizon ?? 5} rounds)</p>
+                      <div className="grid grid-cols-6 gap-1">
+                        {nr.intelligence.horizonOutlook.map((h) => (
+                          <div
+                            key={h.threshold}
+                            className="rounded-md border border-border/60 bg-background/40 px-1 py-1 text-center"
+                            title={`per round ${fmtPct(h.perRound, 1)} (baseline ${fmtPct(h.baseline, 1)}) · ETA median ${h.etaMedian ?? "—"} / p90 ${h.etaP90 ?? "—"} rounds · current run ${h.currentRun}`}
+                          >
+                            <p className="font-data text-[9px] text-muted-foreground">≥{h.threshold}×</p>
+                            <p className="font-data text-[11px] tabular-nums">{fmtPct(h.withinHorizon, 0)}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   <p className="text-[11px] leading-relaxed text-muted-foreground">{nr.note}</p>
                   <div className="flex flex-wrap gap-1.5 border-t border-border/50 pt-2.5">
                     {nr.components.map((c) => (
-                      <span key={c.model} className="font-data rounded-md border border-border/70 bg-background/40 px-2 py-0.5 text-[11px] text-muted-foreground">
+                      <span
+                        key={c.model}
+                        title={nr.intelligence ? `earned weight ${fmtPct(c.weight, 1)} · P(≥2×) ${fmtPct(c.p, 1)}` : undefined}
+                        className="font-data rounded-md border border-border/70 bg-background/40 px-2 py-0.5 text-[11px] text-muted-foreground"
+                      >
                         {c.model} {c.mid.toFixed(2)}
+                        {nr.intelligence && <span className="ml-1 text-muted-foreground/60">·{Math.round(c.weight * 100)}%</span>}
                       </span>
                     ))}
                     <span className="font-data rounded-md border border-primary/30 bg-primary/5 px-2 py-0.5 text-[11px] text-primary/80">
-                      ensemble {nr.expectedMultiplier.toFixed(2)}
+                      {nr.intelligence ? "mixture" : "ensemble"} {nr.expectedMultiplier.toFixed(2)}
                     </span>
+                    {nr.intelligence && (
+                      <span
+                        title={nr.intelligence.honesty}
+                        className={cn(
+                          "font-data rounded-md border px-2 py-0.5 text-[11px]",
+                          (nr.intelligence.skillPct ?? 0) > 0 ? "border-emerald-400/40 text-emerald-300" : "border-border/70 text-muted-foreground",
+                        )}
+                      >
+                        skill vs baseline {nr.intelligence.skillPct == null ? "—" : `${nr.intelligence.skillPct > 0 ? "+" : ""}${nr.intelligence.skillPct.toFixed(1)}%`}
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -272,9 +327,14 @@ export default function CommandCenter() {
               <span className="font-data text-[12px] text-muted-foreground">
                 {f && firstWin ? `P(≥2×) next round ${fmtPct(pred2?.perRound.p)} · in 15m ${fmtPct(firstWin.predictions.find((p) => p.threshold === 2)?.probability)}` : "—"}
               </span>
-              <Link to="/dashboard/fx-lab" className="inline-flex items-center gap-1 text-primary hover:underline">
-                FX Lab <ArrowUpRight className="h-3 w-3" />
-              </Link>
+              <span className="flex items-center gap-3">
+                <Link to="/dashboard/intelligence" className="inline-flex items-center gap-1 text-primary hover:underline">
+                  Full intelligence <ArrowUpRight className="h-3 w-3" />
+                </Link>
+                <Link to="/dashboard/fx-lab" className="inline-flex items-center gap-1 text-primary hover:underline">
+                  FX Lab <ArrowUpRight className="h-3 w-3" />
+                </Link>
+              </span>
             </div>
           </CardContent>
         </Card>
