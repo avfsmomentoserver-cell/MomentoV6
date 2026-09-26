@@ -67,8 +67,10 @@ import {
   type IntelWeights,
 } from "./intelligence";
 import { deepTick, initV64Schema, routeV64, type CoreAdapter } from "./v64routes";
+import { initV65Schema, onIngest, registry, routeV65, type V65User } from "./v65routes";
+import { sha256Sync } from "./v65";
 
-export const VERSION = "6.4.0";
+export const VERSION = "6.5.0";
 
 type Rows = Record<string, unknown>;
 
@@ -368,6 +370,7 @@ export class MomentoCore extends DurableObject {
 
   private initV64(): void {
     initV64Schema(this.ctx.storage.sql as never);
+    initV65Schema(this.ctx.storage.sql as never);
   }
 
   private async bootstrap(): Promise<void> {
@@ -377,7 +380,7 @@ export class MomentoCore extends DurableObject {
     if (userCount === 0) {
       const email = "operator@momento.local";
       const salt = crypto.randomUUID().replace(/-/g, "");
-      const hash = await this.hashPassword("momento", salt);
+      const hash = await this.hashPassword(String(this.envOf().SETUP_PASSWORD ?? "") || "momento", salt);
       sql.exec(
         "INSERT INTO users (email, name, role, password_hash, salt, created_ms) VALUES (?, ?, 'operator', ?, ?, ?)",
         email, "Operator", hash, salt, now,
@@ -473,13 +476,59 @@ export class MomentoCore extends DurableObject {
     const rows = this.ctx.storage.sql
       .exec(
         `SELECT u.id, u.email, u.name, u.role, t.expires_ms FROM tokens t JOIN users u ON u.id = t.user_id
-         WHERE t.token = ? AND u.disabled = 0`,
-        token,
+         WHERE t.token IN (?, ?) AND u.disabled = 0`,
+        "h:" + sha256Sync(token), token,
       )
       .toArray() as Rows[];
     const row = rows[0];
     if (!row || (row.expires_ms as number) < Date.now()) return null;
     return row;
+  }
+
+  /** S-1: HMAC-signed ingest. Returns a denial response, or null when allowed. */
+  private async verifyIngestSignature(request: Request, raw: string): Promise<Response | null> {
+    const secret = String(this.envOf().INGEST_HMAC_SECRET ?? this.setting("ingest_hmac_secret") ?? "");
+    if (!secret) return null; // not configured → open (flagged in /security/status)
+    const ts = request.headers.get("X-Momento-Ts") ?? "";
+    const nonce = request.headers.get("X-Momento-Nonce") ?? "";
+    const sig = (request.headers.get("X-Momento-Signature") ?? "").toLowerCase();
+    const sql = this.ctx.storage.sql;
+    const quarantine = (reason: string) => {
+      sql.exec("INSERT INTO ingest_quarantine (source, payload, reasons, created_ms) VALUES ('ingest', ?, ?, ?)", raw.slice(0, 4000), JSON.stringify([reason]), Date.now());
+      return fail("ingest signature rejected: " + reason, 401);
+    };
+    if (!ts || !nonce || !sig) return quarantine("missing signature headers");
+    if (Math.abs(Date.now() - Number(ts)) > 60_000) return quarantine("timestamp skew > 60s");
+    if (sql.exec("SELECT 1 FROM ingest_nonces WHERE nonce = ?", nonce).toArray().length) return quarantine("replayed nonce");
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(ts + nonce + raw)));
+    const want = [...mac].map((b) => b.toString(16).padStart(2, "0")).join("");
+    if (!constantTimeEq(want, sig)) return quarantine("bad signature");
+    sql.exec("INSERT INTO ingest_nonces (nonce, created_ms) VALUES (?, ?)", nonce, Date.now());
+    sql.exec("DELETE FROM ingest_nonces WHERE created_ms < ?", Date.now() - 10 * 60_000);
+    return null;
+  }
+
+  /** Phase 0 posture report (Platform Book ch.17). */
+  private securityStatus(): Record<string, unknown> {
+    const sql = this.ctx.storage.sql;
+    const env = this.envOf();
+    const hmac = !!(env.INGEST_HMAC_SECRET ?? this.setting("ingest_hmac_secret"));
+    const legacyTokens = (sql.exec("SELECT COUNT(*) AS n FROM tokens WHERE token NOT LIKE 'h:%'").toArray()[0] as { n: number }).n;
+    const def = sql.exec("SELECT id FROM users WHERE email = 'operator@momento.local' AND disabled = 0").toArray().length > 0;
+    const q = (sql.exec("SELECT COUNT(*) AS n FROM ingest_quarantine").toArray()[0] as { n: number }).n;
+    const checks = [
+      { id: "S-1", title: "Signed ingest (HMAC + nonce + 60s skew)", ok: hmac, detail: hmac ? "enforced" : "INGEST_HMAC_SECRET not set — ingest is open" },
+      { id: "S-2", title: "No default operator credential", ok: !def || !!env.SETUP_PASSWORD, detail: def ? (env.SETUP_PASSWORD ? "bootstrap password from SETUP_PASSWORD" : "operator@momento.local / momento still active — rotate it") : "default operator removed" },
+      { id: "S-3", title: "Mutating endpoints require auth", ok: true, detail: "forecasts/resolve → operator, backtest/run → user" },
+      { id: "S-4", title: "Role allow-list + 12-char passwords", ok: true, detail: "client | operator | admin; only admin mints admin" },
+      { id: "S-5", title: "Tokens stored as SHA-256", ok: legacyTokens === 0, detail: legacyTokens ? `${legacyTokens} legacy plaintext token(s) still valid until expiry` : "all tokens hashed" },
+      { id: "S-6", title: "PBKDF2-SHA256 100k (Workers ceiling)", ok: true, detail: "100,000 iterations is the Workers WebCrypto maximum" },
+      { id: "S-7", title: "Constant-time compare + login backoff", ok: true, detail: "exponential lockout after 5 failures" },
+      { id: "S-8", title: "CORS allow-list", ok: !!env.CORS_ORIGINS, detail: env.CORS_ORIGINS ? String(env.CORS_ORIGINS) : "CORS_ORIGINS not set — '*' (demo)" },
+      { id: "S-9", title: "Quarantine for rejected ingest", ok: true, detail: `${q} quarantined payload(s)` },
+    ];
+    return { version: VERSION, passing: checks.filter((c) => c.ok).length, total: checks.length, checks };
   }
 
   private requireOperator(request: Request): Rows {
@@ -520,6 +569,12 @@ export class MomentoCore extends DurableObject {
    * included in forecast context unless the operator disables it
    * (setting reconstruct_in_forecast = 0); calibration never scores them.
    */
+  /** Active as_of (ms) for the current request; null = live. */
+  private asOfMs: number | null = null;
+  private envOf(): Record<string, unknown> {
+    return ((this as unknown as { env?: Record<string, unknown> }).env ?? {}) as Record<string, unknown>;
+  }
+
   private roundsFor(source: string | null, cacheableOrOpts: boolean | { includeReconstructed?: boolean } = true): Round[] {
     const cacheable = typeof cacheableOrOpts === "boolean" ? cacheableOrOpts : true;
     const wantRecon = typeof cacheableOrOpts === "object" && cacheableOrOpts.includeReconstructed !== undefined
@@ -527,6 +582,16 @@ export class MomentoCore extends DurableObject {
       : this.setting("reconstruct_in_forecast") !== "0";
     const key = `${source ?? "all"}|${wantRecon ? "r" : "o"}`;
     const stats = this.tableStats();
+    const asOf = this.asOfMs;
+    if (asOf !== null) {
+      // time machine (F-04): rounds that had happened AND were known before as_of.
+      // Historical back-fills (import / seed / reconstruct) are treated as known at their own timestamp.
+      this.asOfMs = null;
+      let all: Round[];
+      try { all = this.roundsFor(source, { includeReconstructed: wantRecon }); } finally { this.asOfMs = asOf; }
+      const ok = new Set((this.ctx.storage.sql.exec("SELECT id FROM rounds WHERE ts_ms < ? AND (created_ms < ? OR ingest IN ('import', 'seed-span', 'db-import', 'reconstruct'))", asOf, asOf).toArray() as Rows[]).map((r) => r.id as number));
+      return all.filter((r) => ok.has(r.id));
+    }
     if (cacheable) {
       const hit = this.roundsCache.get(key);
       if (hit && hit.maxId === stats.maxId && hit.count === stats.count) return hit.rounds;
@@ -648,6 +713,9 @@ export class MomentoCore extends DurableObject {
     this.invalidateCaches();
     if (sorted.length > 0 && sorted.length <= 200) this.extendSessions(source, sorted);
     if (inserted > 0) this.calibrateNewRounds();
+    if (inserted > 0) {
+      try { onIngest(this.adapter(), inserted, origin); } catch (e) { console.error("v6.5 onIngest", e instanceof Error ? e.message : String(e)); }
+    }
     return { inserted, rejected };
   }
 
@@ -1090,10 +1158,11 @@ export class MomentoCore extends DurableObject {
   private intelLedger(window = 200): IntelWeights {
     const sql = this.ctx.storage.sql;
     const stamp = sql.exec("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS id FROM intel_calibrations").toArray()[0] as { n: number; id: number };
-    const key = `${stamp.n}:${stamp.id}:${window}`;
+    const asOf = this.asOfMs;
+    const key = `${stamp.n}:${stamp.id}:${window}:${asOf ?? "live"}`;
     if (this.intelLedgerCache?.key === key) return this.intelLedgerCache.value;
     const rows = sql
-      .exec("SELECT comp_loss, mix_loss, base_loss, verdict FROM intel_calibrations WHERE resolved_ms IS NOT NULL ORDER BY created_ms DESC LIMIT ?", window)
+      .exec("SELECT comp_loss, mix_loss, base_loss, verdict FROM intel_calibrations WHERE resolved_ms IS NOT NULL AND created_ms < ? ORDER BY created_ms DESC LIMIT ?", asOf ?? 9e15, window)
       .toArray() as Rows[];
     const sums: Record<string, number> = {};
     let mix = 0, base = 0, hits = 0;
@@ -1138,7 +1207,10 @@ export class MomentoCore extends DurableObject {
   /** Build the live full-intelligence forecast with the current ledger + rectification. */
   private intelForecast(rounds: Round[], source: string): FullIntelligenceForecast {
     const corr = this.intelCorrection();
+    const reg = registry(this.ctx.storage.sql as never);
     return fullIntelligenceForecast(rounds, source, {
+      engineStates: reg.states,
+      extraEngines: reg.extras,
       ledger: this.intelLedger(),
       pipelineWeights: this.weightsMap(),
       correction: corr.value || undefined,
@@ -1162,6 +1234,7 @@ export class MomentoCore extends DurableObject {
     }
     let scored = 0;
     const weights = this.weightsMap();
+    const reg = registry(sql as never);
     for (let i = startIdx; i < all.length; i++) {
       const target = all[i];
       if (target.origin === "reconstructed") continue; // fills are context, never scored
@@ -1169,6 +1242,8 @@ export class MomentoCore extends DurableObject {
       const ledger = this.intelLedger();
       const corr = this.intelCorrection();
       const f = fullIntelligenceForecast(history, "all", {
+        engineStates: reg.states,
+        extraEngines: reg.extras,
         ledger,
         pipelineWeights: weights,
         correction: corr.value || undefined,
@@ -1256,8 +1331,44 @@ export class MomentoCore extends DurableObject {
   }
 
   private async route(method: string, path: string, q: URLSearchParams, request: Request): Promise<Response> {
+    const rawAsOf = q.get("as_of");
+    let asOf: number | null = null;
+    if (rawAsOf && method === "GET") {
+      const n = /^\d+$/.test(rawAsOf) ? Number(rawAsOf) : Date.parse(rawAsOf);
+      if (!Number.isFinite(n)) return fail("as_of must be epoch ms or ISO-8601", 400);
+      asOf = n;
+    }
+    if (asOf === null) return this.routeInner(method, path, q, request, null);
+    this.asOfMs = asOf;
+    this.analysisCache.clear(); this.fxCache.clear(); this.momentumCache.clear();
+    try {
+      const res = await this.routeInner(method, path, q, request, asOf);
+      const h = new Headers(res.headers);
+      h.set("X-Momento-As-Of", new Date(asOf).toISOString());
+      return new Response(res.body, { status: res.status, headers: h });
+    } finally {
+      this.asOfMs = null;
+      this.analysisCache.clear(); this.fxCache.clear(); this.momentumCache.clear();
+      this.intelLedgerCache = null;
+    }
+  }
+
+  private async routeInner(method: string, path: string, q: URLSearchParams, request: Request, asOf: number | null): Promise<Response> {
     const sql = this.ctx.storage.sql;
+    // S-1: signed ingest (enforced when INGEST_HMAC_SECRET is configured)
+    let rawBody: string | null = null;
+    if (path === "/api/v1/ingest" && method === "POST") {
+      rawBody = await request.clone().text();
+      const deny = await this.verifyIngestSignature(request, rawBody);
+      if (deny) return deny;
+    }
     const body = method === "POST" || method === "PUT" ? await readBody(request) : {};
+
+    // ---- v6.5 Platform Book surface (proof, lab, time machine, engines, ETA, decisions, fairness, alerts, ask)
+    if (path === "/api/v1/security/status" && method === "GET") return ok(this.securityStatus());
+    const v65user = this.userFor(request) as unknown as V65User | null;
+    const v65 = await routeV65(this.adapter(), method, path, q, body, v65user, asOf);
+    if (v65) return v65;
 
     // ---- v6.4 surface (seeding, reconstruction, eagle eye, dna, linguistics, investigation, chart lab, deep tier, AI)
     const v64 = await routeV64(this.adapter(), method, path, q, body);
@@ -1274,14 +1385,23 @@ export class MomentoCore extends DurableObject {
     if (path === "/api/v1/auth/login" && method === "POST") {
       const email = String(body.email ?? "").toLowerCase().trim();
       const password = String(body.password ?? "");
+      // S-7: exponential backoff per email
+      const la = sql.exec("SELECT fails, locked_until FROM login_attempts WHERE key = ?", email).toArray()[0] as { fails: number; locked_until: number } | undefined;
+      if (la && la.locked_until > Date.now()) return fail(`too many attempts; retry in ${Math.ceil((la.locked_until - Date.now()) / 1000)}s`, 429);
       const rows = sql.exec("SELECT * FROM users WHERE email = ? AND disabled = 0", email).toArray() as Rows[];
       const user = rows[0];
-      if (!user) return fail("invalid credentials", 401);
-      const hash = await this.hashPassword(password, user.salt as string);
-      if (hash !== user.password_hash) return fail("invalid credentials", 401);
+      const hash = await this.hashPassword(password, (user?.salt as string) ?? "no-such-user-salt");
+      if (!user || !constantTimeEq(hash, user.password_hash as string)) {
+        const fails = (la?.fails ?? 0) + 1;
+        const lock = fails >= 5 ? Date.now() + Math.min(15 * 60_000, 1000 * 2 ** (fails - 4)) : 0;
+        sql.exec("INSERT INTO login_attempts (key, fails, locked_until, updated_ms) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET fails = excluded.fails, locked_until = excluded.locked_until, updated_ms = excluded.updated_ms", email, fails, lock, Date.now());
+        return fail("invalid credentials", 401);
+      }
+      sql.exec("DELETE FROM login_attempts WHERE key = ?", email);
       const token = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
       const expires = Date.now() + 30 * 24 * 3600 * 1000;
-      sql.exec("INSERT INTO tokens (token, user_id, created_ms, expires_ms) VALUES (?, ?, ?, ?)", token, user.id, Date.now(), expires);
+      // S-5: only the SHA-256 of the bearer token is stored
+      sql.exec("INSERT INTO tokens (token, user_id, created_ms, expires_ms) VALUES (?, ?, ?, ?)", "h:" + (await sha256Hex(token)), user.id, Date.now(), expires);
       this.audit(email, "auth.login");
       return ok({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role }, expiresMs: expires });
     }
@@ -1289,16 +1409,20 @@ export class MomentoCore extends DurableObject {
       const op = this.requireOperator(request);
       const email = String(body.email ?? "").toLowerCase().trim();
       const password = String(body.password ?? "");
-      if (!email.includes("@") || password.length < 4) return fail("valid email and 4+ char password required");
+      const role = String(body.role ?? "client");
+      // S-4: role allow-list; only an admin may mint an admin
+      if (!["client", "operator", "admin"].includes(role)) return fail("role must be client, operator or admin");
+      if (role === "admin" && op.role !== "admin") return fail("only an admin may create an admin", 403);
+      if (!email.includes("@") || password.length < 12) return fail("valid email and 12+ char password required");
       const salt = crypto.randomUUID().replace(/-/g, "");
       const hash = await this.hashPassword(password, salt);
       try {
-        sql.exec("INSERT INTO users (email, name, role, password_hash, salt, created_ms) VALUES (?, ?, ?, ?, ?, ?)", email, String(body.name ?? email.split("@")[0]), String(body.role ?? "client"), hash, salt, Date.now());
+        sql.exec("INSERT INTO users (email, name, role, password_hash, salt, created_ms) VALUES (?, ?, ?, ?, ?, ?)", email, String(body.name ?? email.split("@")[0]), role, hash, salt, Date.now());
       } catch {
         return fail("email already registered", 409);
       }
       this.audit(op.email as string, "users.create", email);
-      return ok({ email, role: body.role ?? "client" });
+      return ok({ email, role });
     }
     if (path === "/api/v1/auth/me" && method === "GET") {
       const user = this.userFor(request);
@@ -1608,7 +1732,7 @@ export class MomentoCore extends DurableObject {
       this.audit((user?.email as string) ?? "system", "forecasts.record", `${source}@${threshold}x`);
       return ok({ recorded: true });
     }
-    if (path === "/api/v1/forecasts/resolve" && method === "POST") return ok({ resolved: this.resolveForecasts() });
+    if (path === "/api/v1/forecasts/resolve" && method === "POST") { this.requireOperator(request); return ok({ resolved: this.resolveForecasts() }); }
     if (path === "/api/v1/forecasts/accuracy" && method === "GET") return ok(this.forecastAccuracy(q.get("source")));
     if (path === "/api/v1/forecasts/history" && method === "GET") {
       return ok({ history: sql.exec("SELECT * FROM forecasts WHERE actual IS NOT NULL ORDER BY resolved_ms DESC LIMIT 200").toArray() });
@@ -1781,6 +1905,7 @@ export class MomentoCore extends DurableObject {
     }
     if (path === "/api/v1/backtest/run" && method === "POST") {
       const op = this.userFor(request);
+      if (!op) return fail("authentication required", 401);
       const kind = String(body.kind ?? "threshold-ensemble");
       const source = String(body.source ?? "all");
       const rounds = this.roundsFor(source === "all" ? null : source);
@@ -2273,6 +2398,19 @@ class HttpError extends Error {
   constructor(message: string, public status: number) {
     super(message);
   }
+}
+
+function constantTimeEq(a: string, b: string): boolean {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  let diff = a.length ^ b.length;
+  const n = Math.max(a.length, b.length);
+  for (let i = 0; i < n; i++) diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+  return diff === 0;
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const d = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+  return [...d].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 async function readBody(request: Request): Promise<Record<string, unknown>> {

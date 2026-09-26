@@ -33,6 +33,7 @@ import {
   X,
   Zap,
   type LucideIcon,
+  Database, Lightbulb, Scale, Cpu, FlaskRound, Timer, History, Columns3, Dices, BookA, Search, Bell, MessageSquareText,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/state/auth";
@@ -76,6 +77,34 @@ export const NAV_GROUPS: NavGroup[] = [
       { to: "/dashboard/vocabulary", label: "Vocabulary", icon: Fingerprint },
       { to: "/dashboard/chart-lab", label: "Chart Lab", icon: Shapes },
       { to: "/dashboard/investigation", label: "Investigation Suite", icon: FlaskConical },
+    ],
+  },
+  {
+    label: "Proof",
+    items: [
+      { to: "/dashboard/track-record", label: "Track Record", icon: ShieldCheck },
+      { to: "/dashboard/reliability", label: "Reliability", icon: Gauge },
+      { to: "/dashboard/integrity", label: "Integrity", icon: Database },
+      { to: "/dashboard/explain", label: "Explain", icon: Lightbulb },
+      { to: "/dashboard/fairness", label: "Fairness Console", icon: Scale },
+      { to: "/dashboard/platform-book", label: "Platform Book", icon: BookOpen },
+    ],
+  },
+  {
+    label: "Lab",
+    items: [
+      { to: "/dashboard/engines", label: "Engine Registry", icon: Cpu },
+      { to: "/dashboard/experiments", label: "Experiments", icon: FlaskRound },
+      { to: "/dashboard/eta", label: "ETA Board", icon: Timer },
+      { to: "/dashboard/predict", label: "Predict & Cone", icon: LineChart },
+      { to: "/dashboard/replay", label: "Replay", icon: History },
+      { to: "/dashboard/multi", label: "Multi-timeframe", icon: Columns3 },
+      { to: "/dashboard/decisions", label: "Decisions", icon: Scale },
+      { to: "/dashboard/simulator", label: "Simulator", icon: Dices },
+      { to: "/dashboard/dictionary", label: "Dictionary", icon: BookA },
+      { to: "/dashboard/sequence", label: "Sequence Search", icon: Search },
+      { to: "/dashboard/alerts", label: "Alerts", icon: Bell },
+      { to: "/dashboard/ask", label: "Ask Momento", icon: MessageSquareText },
     ],
   },
   {
@@ -180,7 +209,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
             </span>
             <span className="leading-tight">
               <span className="block font-data text-[11px] font-bold uppercase tracking-[0.18em] text-foreground">Momento</span>
-              <span className="block text-[10px] text-muted-foreground">Platform v6.4</span>
+              <span className="block text-[10px] text-muted-foreground">Platform v6.5</span>
             </span>
           </Link>
           <button
@@ -216,7 +245,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
 
         <div className="border-t border-sidebar-border px-4 py-3">
           <p className="font-data text-[9px] uppercase tracking-[0.16em] text-muted-foreground/70">
-            v6.4.0 · momento-core worker
+            v6.5.0 · momento-core worker
           </p>
         </div>
       </aside>

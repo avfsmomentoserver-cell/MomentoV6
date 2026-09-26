@@ -669,6 +669,10 @@ export interface IntelOptions {
   correctionSample?: number;
   /** cap on history the heavy engines see */
   maxHistory?: number;
+  /** v6.5 engine registry (F-12): live | shadow | demoted per engine key */
+  engineStates?: Record<string, string>;
+  /** v6.5 registered custom engines (F-12) — join the mixture as experts */
+  extraEngines?: { key: string; label: string; prior: number; predict: (rounds: Round[]) => number[] }[];
 }
 
 const PRIOR: Record<ComponentKey, number> = {
@@ -902,7 +906,50 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
 
   // ---------- earned mixture
   const weights = earnWeights(opts.ledger);
-  const mixture = normalize(new Array(NB).fill(0).map((_, i) => COMPONENTS.reduce((a, c) => a + weights[c] * dists[c][i], 0)));
+  // v6.5 registry: shadow engines are scored but carry no weight (sleeping
+  // experts), demoted engines sit at the floor, custom engines earn like the rest.
+  const states = opts.engineStates ?? {};
+  const extras = (opts.extraEngines ?? []).map((e) => {
+    let d: number[];
+    try {
+      d = normalize(e.predict(rounds));
+    } catch {
+      d = baseline;
+    }
+    return { key: e.key, label: e.label, prior: e.prior, dist: d.length === NB && d.every(Number.isFinite) ? d : baseline };
+  });
+  const extraW: Record<string, number> = {};
+  if (extras.length || Object.keys(states).length) {
+    const ll = (opts.ledger?.logLoss ?? {}) as Record<string, number>;
+    const nS = opts.ledger?.sample ?? 0;
+    const nEff = Math.min(60, nS);
+    const keys: string[] = [...COMPONENTS, ...extras.map((e) => e.key)];
+    const pri: Record<string, number> = { ...PRIOR, ...Object.fromEntries(extras.map((e) => [e.key, e.prior])) };
+    const stateOf = (k: string) => (k === "baseline" ? "live" : states[k] ?? ((COMPONENTS as readonly string[]).includes(k) ? "live" : "shadow"));
+    const known = keys.filter((k) => typeof ll[k] === "number" && stateOf(k) === "live");
+    const best = known.length ? Math.min(...known.map((k) => ll[k])) : 0;
+    const raw: Record<string, number> = {};
+    for (const k of keys) {
+      const st = stateOf(k);
+      if (st === "shadow") { raw[k] = 0; continue; }
+      const l = ll[k];
+      raw[k] = pri[k] * (nS >= 15 && typeof l === "number" ? Math.exp(-nEff * (l - best)) : (COMPONENTS as readonly string[]).includes(k) ? 1 : 0.25);
+    }
+    let s0 = keys.reduce((a, k) => a + raw[k], 0) || 1;
+    for (const k of keys) raw[k] /= s0;
+    raw.baseline = Math.max(raw.baseline, 0.08);
+    for (const k of keys) {
+      const st = stateOf(k);
+      if (st === "demoted") raw[k] = 0.02;
+      else if (st === "live") raw[k] = Math.max(raw[k], 0.02);
+    }
+    s0 = keys.reduce((a, k) => a + raw[k], 0) || 1;
+    for (const c of COMPONENTS) weights[c] = r4(raw[c] / s0);
+    for (const e of extras) extraW[e.key] = r4(raw[e.key] / s0);
+  }
+  const mixture = normalize(
+    new Array(NB).fill(0).map((_, i) => COMPONENTS.reduce((a, c) => a + weights[c] * dists[c][i], 0) + extras.reduce((a, e) => a + (extraW[e.key] ?? 0) * e.dist[i], 0)),
+  );
   const agreement = clamp(1 - COMPONENTS.reduce((a, c) => a + weights[c] * jsDivergence(dists[c], mixture), 0) / Math.log(2) * 4);
 
   const corr = opts.correction ?? 0;
@@ -982,6 +1029,20 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
     logLoss: typeof opts.ledger?.logLoss?.[c] === "number" ? r4(opts.ledger!.logLoss[c]!) : null,
     samples: c === "dna" ? dna.matchCount : c === "markov" ? followers.length : c === "percentile" ? recent.length : n,
   }));
+  for (const e of extras) {
+    compOut.push({
+      key: e.key as ComponentKey,
+      label: e.label,
+      weight: extraW[e.key] ?? 0,
+      prior: e.prior,
+      mid: r2(quantileOf(e.dist, 0.5)),
+      p2: r4(survivalAt(e.dist, 2)),
+      p10: r4(survivalAt(e.dist, 4)),
+      distribution: e.dist.map(r4),
+      logLoss: typeof opts.ledger?.logLoss?.[e.key as ComponentKey] === "number" ? r4(opts.ledger!.logLoss[e.key as ComponentKey]!) : null,
+      samples: n,
+    });
+  }
   const mid = (c: ComponentKey) => compOut.find((x) => x.key === c)!.mid;
 
   const bandLabel = BAND_LABELS[bandIndex(expected)];

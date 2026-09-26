@@ -1,3 +1,4 @@
+import { ConeStrip } from "@/components/v65/Strips";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, qs } from "@/lib/api";
@@ -61,6 +62,7 @@ export default function Market() {
           </select>
         }
       />
+      <ConeStrip />
 
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         <StatTile label="Last" value={last ? `${last.multiplier.toFixed(2)}×` : "—"} sub={fmtDateTime(last?.ts)} pulse />

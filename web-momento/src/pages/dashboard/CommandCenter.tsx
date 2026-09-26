@@ -1,3 +1,4 @@
+import { SignificanceStrip } from "@/components/v65/Strips";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
@@ -153,6 +154,7 @@ export default function CommandCenter() {
           </>
         }
       />
+      <SignificanceStrip />
 
 
       <div className="grid gap-3 xl:grid-cols-3">

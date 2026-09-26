@@ -1,5 +1,6 @@
 // Typed API client for the Momento backend (Cloudflare Worker).
 import { safeStorage } from "@/lib/storage";
+import { withAsOf } from "@/lib/asof";
 
 export const BASE = import.meta.env.EXPO_PUBLIC_RORK_FUNCTIONS_URL ?? "https://prosync-backend.rork.app";
 const TOKEN_KEY = "momento.token";
@@ -28,7 +29,9 @@ async function request<T>(path: string, init?: RequestInit & { json?: unknown })
 }
 
 export const api = {
-  get: <T,>(path: string) => request<T>(path),
+  get: <T,>(path: string) => request<T>(withAsOf(path)),
+  /** GET that ignores the time machine (live values only). */
+  live: <T,>(path: string) => request<T>(path),
   post: <T,>(path: string, json?: unknown) => request<T>(path, { method: "POST", json }),
   put: <T,>(path: string, json?: unknown) => request<T>(path, { method: "PUT", json }),
   del: <T,>(path: string, json?: unknown) => request<T>(path, { method: "DELETE", json }),

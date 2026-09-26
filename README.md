@@ -1,5 +1,9 @@
 # Momento Platform
 
+v6.5.0 — Platform Book edition: every feature of The Momento Platform Book (Proof + Lab consoles, time machine, hash-chained track record, fairness console, alerts, Ask Momento) plus Phase 0 security. See `docs/markdown/v6-5-platform-book.md` and the bundled book in `docs/book/`.
+
+> Production env: `INGEST_HMAC_SECRET`, `SETUP_PASSWORD`, `CORS_ORIGINS`, `ENTRIM_API_KEY`.
+
 v6.4.0 — full intelligence platform: TradingView-grade charts with drawings, realtime + scheduled deep computation, ShapeShifter Darkboard and Chart Lab (drawn shape predictions decomputed to rounds with ETAs), filterable DNA / linguistics / vocabulary, V5-style Eagle Eye, Investigation Suite, labelled session-gap reconstruction, Spribe Top-rounds and span seeding, and an Entrim AI forecast summary. See `docs/markdown/v6-4-full-intelligence.md`.
 
 > Secrets: set the AI key with `wrangler secret put ENTRIM_API_KEY` (production) or `ENTRIM_API_KEY=… node functions/local-dev.mjs` (local). Never commit keys.

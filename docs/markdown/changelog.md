@@ -1,5 +1,14 @@
 # Changelog
 
+## v6.5.0 — Platform Book edition
+
+- Implements The Momento Platform Book: all 38 Chapter 18 features (F-01…F-38; F-02 and F-05 partial pending a second collector / shards). See `v6-5-platform-book`.
+- New console groups **Proof** (Track Record, Reliability, Integrity, Explain, Fairness Console, Platform Book) and **Lab** (Engine Registry, Experiments, ETA Board, Predict & Cone, Replay, Multi-timeframe, Decisions, Simulator, Dictionary, Sequence Search, Alerts, Ask Momento).
+- Time machine (`?as_of=`) with top-bar control and banner; alerts bell; signal-significance strip; forecast cone on Market; consumer gate label.
+- Hash-chained forecast ledger with in-browser verification; engine registry with shadow → admitted lifecycle feeding the mixture.
+- Phase 0 security: HMAC-signed ingest, env bootstrap password, authz on resolve/backtest, role allow-list, hashed session tokens, CORS allow-list, login backoff, `GET /api/v1/security/status`.
+- The complete Platform Book is bundled under `docs/book/` and in the Documentation Center.
+
 ## v6.4.0 — full intelligence platform
 
 - **TradingView-grade charts** (`TvChart`, lightweight-charts v5), used by Market, Momentum Lab, the consumer charts, MomentoFX and Chart Lab:

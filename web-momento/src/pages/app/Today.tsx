@@ -1,3 +1,4 @@
+import { GateBadge } from "@/components/v65/Strips";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, CalendarCheck, Sparkles, Target } from "lucide-react";
 import { api, qs } from "@/lib/api";
@@ -30,6 +31,7 @@ export default function Today() {
         title="Today"
         subtitle="Simple daily guidance from the measured baseline — the same honest engine the operator console uses, simplified."
       />
+      <GateBadge />
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         <StatTile label="Last round" value={fmtMult(latest.data?.rounds[0]?.multiplier)} sub={timeAgo(latest.data?.rounds[0]?.ts)} pulse />
         <StatTile label="Chance of ≥2× today" value={fmtPct(t2?.rate)} sub={`Wilson CI ${fmtPct(t2?.ci[0], 1)}–${fmtPct(t2?.ci[1], 1)}`} tone="signal" />

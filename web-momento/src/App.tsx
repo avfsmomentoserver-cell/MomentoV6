@@ -50,6 +50,24 @@ import Users from "@/pages/dashboard/Users";
 import RoundTesting from "@/pages/dashboard/RoundTesting";
 import Downloads from "@/pages/dashboard/Downloads";
 import { DocsIndex, DocPage } from "@/pages/dashboard/Docs";
+import V65Integrity from "@/pages/dashboard/Integrity";
+import V65Reliability from "@/pages/dashboard/Reliability";
+import V65TrackRecord from "@/pages/dashboard/TrackRecord";
+import V65Engines from "@/pages/dashboard/Engines";
+import V65Explain from "@/pages/dashboard/Explain";
+import V65EtaBoard from "@/pages/dashboard/EtaBoard";
+import V65Predict from "@/pages/dashboard/Predict";
+import V65Replay from "@/pages/dashboard/Replay";
+import V65Multi from "@/pages/dashboard/Multi";
+import V65Decisions from "@/pages/dashboard/Decisions";
+import V65Simulator from "@/pages/dashboard/Simulator";
+import V65Experiments from "@/pages/dashboard/Experiments";
+import V65Fairness from "@/pages/dashboard/Fairness";
+import V65Dictionary from "@/pages/dashboard/Dictionary";
+import V65Sequence from "@/pages/dashboard/Sequence";
+import V65Alerts from "@/pages/dashboard/Alerts";
+import V65Ask from "@/pages/dashboard/Ask";
+import V65PlatformBook from "@/pages/dashboard/PlatformBook";
 
 import Orchestrator from "@/pages/Orchestrator";
 import Inventory from "@/pages/Inventory";
@@ -119,6 +137,24 @@ const App = () => (
               <Route path="/dashboard/users" element={<Users />} />
               <Route path="/dashboard/testing" element={<RoundTesting />} />
               <Route path="/dashboard/downloads" element={<Downloads />} />
+              <Route path="/dashboard/integrity" element={<V65Integrity />} />
+              <Route path="/dashboard/reliability" element={<V65Reliability />} />
+              <Route path="/dashboard/track-record" element={<V65TrackRecord />} />
+              <Route path="/dashboard/engines" element={<V65Engines />} />
+              <Route path="/dashboard/explain" element={<V65Explain />} />
+              <Route path="/dashboard/eta" element={<V65EtaBoard />} />
+              <Route path="/dashboard/predict" element={<V65Predict />} />
+              <Route path="/dashboard/replay" element={<V65Replay />} />
+              <Route path="/dashboard/multi" element={<V65Multi />} />
+              <Route path="/dashboard/decisions" element={<V65Decisions />} />
+              <Route path="/dashboard/simulator" element={<V65Simulator />} />
+              <Route path="/dashboard/experiments" element={<V65Experiments />} />
+              <Route path="/dashboard/fairness" element={<V65Fairness />} />
+              <Route path="/dashboard/dictionary" element={<V65Dictionary />} />
+              <Route path="/dashboard/sequence" element={<V65Sequence />} />
+              <Route path="/dashboard/alerts" element={<V65Alerts />} />
+              <Route path="/dashboard/ask" element={<V65Ask />} />
+              <Route path="/dashboard/platform-book" element={<V65PlatformBook />} />
               <Route path="/dashboard/docs" element={<DocsIndex />} />
               <Route path="/dashboard/docs/:slug" element={<DocPage />} />
 
