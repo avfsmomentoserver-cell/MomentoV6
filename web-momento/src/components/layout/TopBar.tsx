@@ -56,7 +56,7 @@ export function TopBar({ onOpenSidebar, onOpenPalette }: { onOpenSidebar: () => 
             )}
           />
           <span className="font-data text-[10px] uppercase tracking-wider text-muted-foreground">
-            {health.data ? `core ${health.data.version} · ${health.data.rounds.toLocaleString()} rounds` : health.isError ? "api offline" : "connecting…"}
+            {health.data ? `core ${health.data.version} · ${Number(health.data.rounds ?? 0).toLocaleString()} rounds` : health.isError ? "api offline" : "connecting…"}
           </span>
         </div>
 

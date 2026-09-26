@@ -7,6 +7,7 @@
 // zoom in/out/fit, fullscreen, PNG snapshot, crosshair OHLC legend and a
 // forecast overlay (projected p50 path + p25–p75 fan).
 
+import { safeStorage } from "@/lib/storage";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AreaSeries,
@@ -192,7 +193,7 @@ export function TvChart({
   const prefKey = `momento.tv.${storageKey}`;
   const pref = useMemo(() => {
     try {
-      return JSON.parse(localStorage.getItem(prefKey) ?? "{}") as { kind?: ChartKind; ind?: Indicator[]; log?: boolean; hueMode?: boolean };
+      return JSON.parse(safeStorage.getItem(prefKey) ?? "{}") as { kind?: ChartKind; ind?: Indicator[]; log?: boolean; hueMode?: boolean };
     } catch {
       return {};
     }
@@ -205,7 +206,7 @@ export function TvChart({
   const [tool, setTool] = useState<Tool>("none");
   const [drawings, setDrawings] = useState<Drawing[]>(() => {
     try {
-      return JSON.parse(localStorage.getItem(`${prefKey}.drawings`) ?? "[]") as Drawing[];
+      return JSON.parse(safeStorage.getItem(`${prefKey}.drawings`) ?? "[]") as Drawing[];
     } catch {
       return [];
     }
@@ -225,10 +226,10 @@ export function TvChart({
   const byTime = useMemo(() => new Map(data.map((c) => [c.t + TZ_SHIFT, c])), [data]);
 
   useEffect(() => {
-    localStorage.setItem(prefKey, JSON.stringify({ kind, ind, log, hueMode }));
+    safeStorage.setItem(prefKey, JSON.stringify({ kind, ind, log, hueMode }));
   }, [prefKey, kind, ind, log, hueMode]);
   useEffect(() => {
-    localStorage.setItem(`${prefKey}.drawings`, JSON.stringify(drawings));
+    safeStorage.setItem(`${prefKey}.drawings`, JSON.stringify(drawings));
     redrawRef.current();
   }, [prefKey, drawings]);
 

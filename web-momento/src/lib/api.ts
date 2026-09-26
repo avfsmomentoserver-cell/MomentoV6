@@ -1,23 +1,16 @@
 // Typed API client for the Momento backend (Cloudflare Worker).
+import { safeStorage } from "@/lib/storage";
 
 export const BASE = import.meta.env.EXPO_PUBLIC_RORK_FUNCTIONS_URL ?? "https://prosync-backend.rork.app";
 const TOKEN_KEY = "momento.token";
 
 export function getToken(): string | null {
-  try {
-    return localStorage.getItem(TOKEN_KEY);
-  } catch {
-    return null;
-  }
+  return safeStorage.getItem(TOKEN_KEY);
 }
 
 export function setToken(token: string | null): void {
-  try {
-    if (token) localStorage.setItem(TOKEN_KEY, token);
-    else localStorage.removeItem(TOKEN_KEY);
-  } catch {
-    // storage unavailable
-  }
+  if (token) safeStorage.setItem(TOKEN_KEY, token);
+  else safeStorage.removeItem(TOKEN_KEY);
 }
 
 async function request<T>(path: string, init?: RequestInit & { json?: unknown }): Promise<T> {
