@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "node local-dev.mjs",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "build:lib": "node test/build.mjs",
+    "test": "node test/build.mjs && node --test test/*.test.mjs",
+    "lib:backtest": "node lib/backtest.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.28.2",

@@ -28,3 +28,4 @@ data/
 *.log
 npm-debug.log*
 functions/--port
+.lib-build/

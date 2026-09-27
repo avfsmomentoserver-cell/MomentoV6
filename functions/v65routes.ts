@@ -16,6 +16,7 @@ import { BAND_LABELS, bandIndex } from "./analysis";
 import { anchors, rangeMomentum } from "./momentum";
 import { wordOf } from "./v64";
 import type { CoreAdapter } from "./v64routes";
+import { libBacktest, libForecast } from "./lib/forecast";
 import {
   ENGINE_FAMILIES,
   GENESIS,
@@ -917,6 +918,18 @@ export async function routeV65(a: CoreAdapter, method: string, path: string, q: 
     if (!isOp(user)) return fail("operator role required", 403);
     return null;
   };
+
+  // ---- Lib: probabilistic next-event forecaster (functions/lib/forecast.ts)
+  if (p === "lib/forecast" && method === "GET") {
+    const rs = rounds();
+    return ok({ source: srcOf(q) ?? "all", ...libForecast(rs, { maxHistory: num(q.get("history"), 30000, 500, 200000) }) });
+  }
+  if (p === "lib/backtest" && method === "GET") {
+    const rs = rounds();
+    const last = num(q.get("last"), 5000, 500, 100000);
+    const tail = rs.slice(-Math.min(rs.length, last + 20000));
+    return ok({ source: srcOf(q) ?? "all", ...libBacktest(tail, { warmup: Math.max(0, tail.length - last) }) });
+  }
 
   // ---- F-04 time travel: stored forecast as of t (never recomputed)
   if (p === "intelligence/forecast" && method === "GET" && asOf) {
