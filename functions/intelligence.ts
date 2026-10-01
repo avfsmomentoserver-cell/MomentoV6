@@ -964,9 +964,9 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
   const ensembleDist = reshapeFromSurvival(baseline, per2.p, per5.p, per10.p);
 
   // Ladder distribution: bias based on ladder type and pressure
-  const ladderTilt = ladders.currentLadder?.type === "ascend" ? 0.3 : ladders.currentLadder?.type === "collapse" ? -0.3 : 0;
+  const ladderDistTilt = ladders.currentLadder?.type === "ascend" ? 0.3 : ladders.currentLadder?.type === "collapse" ? -0.3 : 0;
   const ladderPressure = ladders.pressureScore > 0.5 ? ladders.pressureScore * 0.2 : 0;
-  const ladderBias = clamp(ladderTilt + ladderPressure, -0.5, 0.5);
+  const ladderBias = clamp(ladderDistTilt + ladderPressure, -0.5, 0.5);
   const ladderDist = tilt(baseline, ladderBias);
 
   // Resistance distribution: bias toward lower bands if dominant resistance is close
