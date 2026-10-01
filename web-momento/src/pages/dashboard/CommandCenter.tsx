@@ -238,6 +238,26 @@ export default function CommandCenter() {
                         </span>
                       </>
                     )}
+                    {nr.intelligence?.candidateBias !== undefined && (
+                      <span className="rounded-md border border-emerald-400/30 bg-emerald-400/5 px-2 py-0.5 text-[10px] text-emerald-300" title={`Candidate bias: ${nr.intelligence.candidateBias.toFixed(2)}`}>
+                        cand: {Math.round(nr.intelligence.candidateBias * 100)}%
+                      </span>
+                    )}
+                    {nr.intelligence?.collapseBias !== undefined && Math.abs(nr.intelligence.collapseBias) > 0.01 && (
+                      <span className="rounded-md border border-red-400/30 bg-red-400/5 px-2 py-0.5 text-[10px] text-red-300" title={`Collapse bias: ${nr.intelligence.collapseBias.toFixed(2)}`}>
+                        col: {nr.intelligence.collapseBias > 0 ? "+" : ""}{Math.round(nr.intelligence.collapseBias * 100)}%
+                      </span>
+                    )}
+                    {nr.intelligence?.ceilingAdjustment !== undefined && (
+                      <span className="rounded-md border border-blue-400/30 bg-blue-400/5 px-2 py-0.5 text-[10px] text-blue-300" title={`Ceiling adjustment: ${nr.intelligence.ceilingAdjustment.toFixed(2)}`}>
+                        ceil: {nr.intelligence.ceilingAdjustment < 1 ? "⊕" : "⊖"}{Math.abs(Math.round((nr.intelligence.ceilingAdjustment - 1) * 100))}%
+                      </span>
+                    )}
+                    {nr.intelligence?.candidateSpread !== undefined && (
+                      <span className="rounded-md border border-yellow-400/30 bg-yellow-400/5 px-2 py-0.5 text-[10px] text-yellow-300" title={`Candidate spread: ${nr.intelligence.candidateSpread.toFixed(2)}`}>
+                        spread: {nr.intelligence.candidateSpread.toFixed(2)}
+                      </span>
+                    )}
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
@@ -252,6 +272,9 @@ export default function CommandCenter() {
                         moonshot reach (p90) ~{fmtMult(nr.moonshotReach)}
                         {nr.intelligence?.rangeScale && (
                           <span className="ml-2 text-muted-foreground/60">· scale ×{nr.intelligence.rangeScale.toFixed(2)}</span>
+                        )}
+                        {nr.intelligence?.ceilingAdjustment && (
+                          <span className="ml-2 text-muted-foreground/60">· ceil ×{nr.intelligence.ceilingAdjustment.toFixed(2)}</span>
                         )}
                       </p>
                       {nr.intelligence?.rangeScale && (

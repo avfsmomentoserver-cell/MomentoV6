@@ -1114,6 +1114,67 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
   );
   const computedBand = BAND_LABELS[Math.round(finalBandIndex)];
 
+  // ---------- Phase 2: Markov candidate bias adjustments (conservative defaults)
+  // These parameters can be tuned via calibration or the research test endpoint
+
+  // A. Candidate-weighted expected bias
+  const candidateExpected = candidates.reduce((sum, c) => sum + c.probability * (c.rangeLo + c.rangeHi) / 2, 0);
+  const CANDIDATE_SHIFT = 0.35; // From test recommendations
+  const expectedAfterCandidates = expected * (1 - CANDIDATE_SHIFT) + candidateExpected * CANDIDATE_SHIFT;
+
+  // B. Collapse/ascend ladder downward bias
+  const COLLAPSE_BIAS = 0.12;
+  const LADDER_BIAS = 0.05;
+  let collapseBias = 0;
+  if (top.state === "Collapse" || top.state === "Exhaustion") {
+    collapseBias = COLLAPSE_BIAS;
+  }
+  if (ladders.currentLadder && ladders.currentLadder.length >= 10) {
+    collapseBias -= LADDER_BIAS;
+  }
+  const expectedAfterCollapse = expectedAfterCandidates * (1 + collapseBias * confidence);
+
+  // C. Ceiling-based range adjustment
+  const CEILING_WINDOW = 50;
+  const CONTAINED_MULTIPLIER = 0.85;
+  const BREAKOUT_MULTIPLIER = 1.15;
+  const ceilingData = m.slice(-CEILING_WINDOW).sort((a, b) => a - b);
+  const ceiling = ceilingData[Math.floor(ceilingData.length * 0.95)] ?? 2;
+  const last10 = m.slice(-10);
+  const contained = last10.every((x) => x <= ceiling);
+  const ceilingAdjustment = contained ? CONTAINED_MULTIPLIER : BREAKOUT_MULTIPLIER;
+  rangeLo = Math.max(1, rangeLo / Math.sqrt(ceilingAdjustment));
+  rangeHi = rangeHi * Math.sqrt(ceilingAdjustment);
+
+  // D. Candidate probability spread for range
+  const LOW_SPREAD_THRESHOLD = 0.25;
+  const HIGH_SPREAD_THRESHOLD = 0.45;
+  const LOW_SPREAD_MULTIPLIER = 1.25;
+  const HIGH_SPREAD_MULTIPLIER = 0.9;
+  const candidateSpread = top.probability - (candidates[1]?.probability ?? 0);
+  if (candidateSpread < LOW_SPREAD_THRESHOLD) {
+    rangeLo = Math.max(1, rangeLo / LOW_SPREAD_MULTIPLIER);
+    rangeHi = rangeHi * LOW_SPREAD_MULTIPLIER;
+  } else if (candidateSpread > HIGH_SPREAD_THRESHOLD) {
+    rangeLo = Math.max(1, rangeLo / HIGH_SPREAD_MULTIPLIER);
+    rangeHi = rangeHi * HIGH_SPREAD_MULTIPLIER;
+  }
+
+  // E. State-specific candidate weighting
+  const BULLISH_WEIGHT = 1.15;
+  const BEARISH_WEIGHT = 1.15;
+  let stateWeightedExpected = expectedAfterCollapse;
+  if (top.state === "Moonshot" || top.state === "Ignition") {
+    const bullishWeight = candidates.filter((c) => c.state === "Moonshot" || c.state === "Ignition").reduce((sum, c) => sum + c.probability, 0);
+    stateWeightedExpected = expectedAfterCollapse * (1 - bullishWeight * 0.1) + candidateExpected * (bullishWeight * 0.1);
+  } else if (top.state === "Collapse" || top.state === "Exhaustion") {
+    const bearishWeight = candidates.filter((c) => c.state === "Collapse" || c.state === "Exhaustion").reduce((sum, c) => sum + c.probability, 0);
+    stateWeightedExpected = expectedAfterCollapse * (1 - bearishWeight * 0.1) + candidateExpected * (bearishWeight * 0.1);
+  }
+
+  // Apply final expected value
+  expected = stateWeightedExpected;
+
   const bandLabel = computedBand;
   const honesty = bandTest.independent
     ? "Band-to-band transitions pass the chi-square independence test — consecutive rounds behave as independent draws, so engines can only earn weight by out-scoring the measured baseline on the calibration ledger."
@@ -1203,6 +1264,11 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
         modeBandIndex: modeBandIndex,
         computedBandIndex: Math.round(finalBandIndex),
       },
+      candidateBias: r4(CANDIDATE_SHIFT),
+      collapseBias: r4(collapseBias),
+      ceilingAdjustment: r4(ceilingAdjustment),
+      candidateSpread: r4(candidateSpread),
+      weightedCandidateExpected: r2(candidateExpected),
     },
   };
 }

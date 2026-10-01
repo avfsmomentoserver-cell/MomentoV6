@@ -575,6 +575,11 @@ export interface IntelligenceBlock {
     modeBandIndex: number;
     computedBandIndex: number;
   };
+  candidateBias?: number;
+  collapseBias?: number;
+  ceilingAdjustment?: number;
+  candidateSpread?: number;
+  weightedCandidateExpected?: number;
 }
 
 export interface IntelCalibrationRow {

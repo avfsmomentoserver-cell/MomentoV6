@@ -49,6 +49,7 @@ import {
   windowProbability,
   type WindowDef,
 } from "./pipeline";
+import { testCandidateBiasApproaches } from "./test-candidate-bias";
 import {
   anchors,
   assessLive,
@@ -2003,6 +2004,16 @@ export class MomentoCore extends DurableObject {
         live,
         liveThresholds: [2, 5, 10, 50, 100],
       });
+    }
+    if (path === "/api/v1/research/candidate-bias-test" && method === "GET") {
+      const op = this.userFor(request);
+      if (!op) return fail("authentication required", 401);
+      const source = q.get("source") ?? "all";
+      const rounds = this.roundsFor(source === "all" ? null : source);
+      if (rounds.length < 500) return fail("need at least 500 rounds to test candidate bias");
+      const results = testCandidateBiasApproaches(rounds);
+      this.audit((op?.email as string) ?? "system", "research.candidate-bias-test", null, { rounds: rounds.length });
+      return ok(results);
     }
     if (path === "/api/v1/calibration" && method === "GET") {
       const rounds = this.roundsFor(null);
