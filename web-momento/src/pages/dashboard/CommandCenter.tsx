@@ -341,11 +341,19 @@ export default function CommandCenter() {
                           "font-data rounded-md border px-2 py-0.5 text-[11px] transition-all duration-400 ease-out",
                           c.weight > 0.15 ? "border-primary/40 bg-primary/10 text-primary" : "border-border/70 bg-background/40 text-muted-foreground"
                         )}
-                        title={nr.intelligence ? `earned weight ${fmtPct(c.weight, 1)} · P(≥2×) ${fmtPct(c.p, 1)}` : undefined}
+                        title={nr.intelligence ? `earned weight ${fmtPct(c.weight, 1)} · P(≥2×) ${fmtPct(c.p2, 1)}${c.confidence !== undefined ? ` · confidence ${Math.round(c.confidence * 100)}%` : ""}` : undefined}
                       >
                         <div className="flex items-center gap-1">
                           <span>{c.model} {c.mid.toFixed(2)}</span>
                           {nr.intelligence && <span className="text-muted-foreground/60">·{Math.round(c.weight * 100)}%</span>}
+                          {c.confidence !== undefined && (
+                            <span className={cn(
+                              "text-[10px] px-1 rounded",
+                              c.confidence < 0.3 ? "bg-amber-500/20 text-amber-600" : "bg-emerald-500/20 text-emerald-600"
+                            )}>
+                              {Math.round(c.confidence * 100)}%
+                            </span>
+                          )}
                         </div>
                         {nr.intelligence && (
                           <div className="mt-0.5 h-0.5 w-full max-w-[40px] rounded-full bg-border overflow-hidden">

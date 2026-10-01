@@ -32,7 +32,7 @@ import {
   normalize,
   percentileWait,
   pressure as pressureOf,
-  shape as shapeOf,
+  shape,
   shapeDistribution,
   streaks as streaksOf,
   type Round,
@@ -576,6 +576,7 @@ export interface IntelComponent {
   distribution: number[];
   logLoss: number | null;
   samples: number;
+  confidence?: number;  // Confidence score for adaptive engines
 }
 
 export interface IntelCandidate {
@@ -834,7 +835,7 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
   const ml = mlIntel(m, emp);
   const press = pressureOf(rounds);
   const ms = moonshotOf(rounds);
-  const sh = shapeOf(rounds, 80);
+  const sh = shape(rounds, 80);
   const st = streaksOf(rounds, 2);
   const bandTest = bandsOf(rounds.slice(-5000));
   const v6band = nextRoundForecast(rounds, source, pw);
@@ -970,6 +971,30 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
     shape: shapeDistribution(rounds),
     fxRegime: fxDistribution(rounds),
   };
+
+  // Compute confidence for adaptive engines
+  const componentConfidence: Partial<Record<ComponentKey, number>> = {};
+
+  // Shape confidence from shape() function
+  const shapeData = shape(rounds, 80);
+  componentConfidence.shape = shapeData.confidence;
+
+  // Linguistics confidence: based on token diversity and recency
+  const ling = linguistics(rounds, 200);
+  const tokenDiversity = new Set(ling.recent.map(r => r.token)).size;
+  const lingConfidence = Math.min(0.9, Math.max(0.1, tokenDiversity / 20));
+  componentConfidence.linguistics = lingConfidence;
+
+  // FX regime confidence: based on signal strength (use existing variables)
+  const volConf = vol && (vol.regime === "compressed" || vol.regime === "expanded")
+    ? Math.min(1, (vol.volPercentile - 0.5) * 2) : 0;
+  const trendConf = trend && trend.classification === "trending" ? Math.min(1, trend.efficiency) : 0;
+  const revConf = rev ? Math.min(1, Math.abs(rev.zScore) / 2) : 0;
+  const breakoutConf = brk && brk.compressionPercentile > 0.8
+    ? Math.min(1, (brk.compressionPercentile - 0.8) * 5) : 0;
+
+  const fxConfidence = (volConf + trendConf + revConf + breakoutConf) / 4;
+  componentConfidence.fxRegime = Math.min(0.9, Math.max(0.1, fxConfidence));
 
   // ---------- earned mixture
   const weights = earnWeights(opts.ledger);
@@ -1213,6 +1238,7 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
     distribution: dists[c].map(r4),
     logLoss: typeof opts.ledger?.logLoss?.[c] === "number" ? r4(opts.ledger!.logLoss[c]!) : null,
     samples: c === "dna" ? dna.matchCount : c === "markov" ? followers.length : c === "percentile" ? recent.length : n,
+    confidence: componentConfidence[c],
   }));
   for (const e of extras) {
     compOut.push({

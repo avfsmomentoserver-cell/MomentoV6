@@ -394,6 +394,7 @@ export interface Shape {
   acceleration: number;
   skewness: number;
   kurtosis: number;
+  confidence: number;
   dryZone: { active: boolean; severity: number; window: number; threshold: number };
   pareto: { alpha: number; ks: number; pValue: number; plausibility: string };
   eta: { target: number; median: number | null; band: [number, number] | null }[];
@@ -420,10 +421,22 @@ export function shape(rounds: Round[], window = 60): Shape {
   const sd = Math.sqrt(logs.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, n));
   const skew = n ? logs.reduce((a, b) => a + ((b - mean) / sd) ** 3, 0) / n : 0;
   const kurt = n ? logs.reduce((a, b) => a + ((b - mean) / sd) ** 4, 0) / n : 0;
+
+  // Adaptive classification thresholds based on recent statistics
+  const recentKurt = kurt;
+  const recentSkew = Math.abs(skew);
+  const kurtThreshold = 3.0 + (recentKurt - 2) * 0.5;
+  const skewThreshold = 0.5 + recentSkew * 0.3;
+
   let classification = "uniform";
-  if (kurt > 4 && skew > 0.8) classification = "clustered";
-  else if (kurt > 3.2) classification = "power_law";
-  else if (Math.abs(accel) > 0.01) classification = accel > 0 ? "exponential" : "bimodal";
+  if (kurt > kurtThreshold && skew > skewThreshold) {
+    classification = kurt > kurtThreshold * 1.2 ? "clustered" : "weak_clustered";
+  } else if (kurt > kurtThreshold * 0.8) {
+    classification = kurt > kurtThreshold * 1.1 ? "power_law" : "weak_power_law";
+  } else if (Math.abs(accel) > 0.008) {
+    const prefix = Math.abs(accel) > 0.015 ? "" : "weak_";
+    classification = prefix + (accel > 0 ? "exponential" : "bimodal");
+  }
   const rolling: number[] = recent.slice(-50);
   const rollMean = rolling.reduce((a, b) => a + b, 0) / Math.max(1, rolling.length);
   const dry = rollMean < 2;
@@ -444,12 +457,33 @@ export function shape(rounds: Round[], window = 60): Shape {
     return { target, median: medianWait(rate), band: [percentileWait(rate, 0.05), percentileWait(rate, 0.95)] as [number, number] | null, _surv: surv };
   }).map(({ _surv, ...rest }) => rest);
   const group = BAND_LABELS[bandIndex(recent[recent.length - 1] ?? 1)];
+
+  // Compute confidence based on multiple factors
+  const kurtosisScore = Math.min(1, (kurt - 2) / 4);
+  const skewnessScore = Math.min(1, Math.abs(skew) / 1.5);
+  const accelScore = Math.min(1, Math.abs(accel) / 0.05);
+  const slopeScore = Math.min(1, Math.abs(slope) / 0.02);
+  const sampleScore = Math.min(1, n / 100);
+  const paretoScore = plausibility === "pareto-plausible" ? 0.2 : 0;
+
+  const confidence = (
+    kurtosisScore * 0.25 +
+    skewnessScore * 0.15 +
+    accelScore * 0.2 +
+    slopeScore * 0.15 +
+    sampleScore * 0.15 +
+    paretoScore
+  );
+
+  const finalConfidence = Math.max(0.1, Math.min(0.9, confidence));
+
   return {
     classification,
     slope: +slope.toFixed(4),
     acceleration: +accel.toFixed(4),
     skewness: +skew.toFixed(3),
     kurtosis: +kurt.toFixed(3),
+    confidence: +finalConfidence.toFixed(3),
     dryZone: { active: dry, severity: +severity.toFixed(2), window: 50, threshold: 2 },
     pareto: { alpha: +alpha.toFixed(3), ks: +ks.toFixed(3), pValue: +pValue.toFixed(4), plausibility },
     eta,
@@ -727,36 +761,31 @@ export const normalize = (xs: number[]): number[] => {
 /**
  * DNA pattern distribution: maps statistically significant k-mer patterns to band probabilities.
  * Uses pattern lift (how much better than base rate) to weight the distribution.
+ * Now with adaptive k, confidence scoring, and support-aware smoothing.
  */
 export function dnaPatternDistribution(rounds: Round[]): number[] {
   const base = bandShares(rounds.map((r) => r.multiplier));
   if (rounds.length < 100) return base;
 
-  // Simplified pattern detection: look at recent k-mers
-  const k = 3;
+  // Adaptive k based on data size
+  const k = rounds.length < 200 ? 2 : rounds.length < 500 ? 3 : rounds.length < 1000 ? 4 : 5;
+
   const recent = rounds.slice(-50);
-  const bandSeq = recent.map((r) => {
-    const m = r.multiplier;
+  const encodeBand = (m: number): string => {
     if (m < 1.5) return "A";
     if (m < 2) return "B";
     if (m < 5) return "C";
     if (m < 10) return "D";
     if (m < 100) return "E";
     return "F";
-  });
+  };
+
+  const bandSeq = recent.map((r) => encodeBand(r.multiplier));
 
   // Build pattern→distribution mapping from history
   const patternToDist = new Map<string, number[]>();
   for (let i = k; i < rounds.length - 1; i++) {
-    const pattern = rounds.slice(i - k, i).map((r) => {
-      const m = r.multiplier;
-      if (m < 1.5) return "A";
-      if (m < 2) return "B";
-      if (m < 5) return "C";
-      if (m < 10) return "D";
-      if (m < 100) return "E";
-      return "F";
-    }).join("");
+    const pattern = rounds.slice(i - k, i).map((r) => encodeBand(r.multiplier)).join("");
     const nextBand = bandIndex(rounds[i].multiplier);
     const dist = patternToDist.get(pattern) ?? [0, 0, 0, 0, 0, 0];
     dist[nextBand]++;
@@ -775,14 +804,46 @@ export function dnaPatternDistribution(rounds: Round[]): number[] {
 
   if (!patternDist) return base;
 
+  // Compute pattern confidence
+  const patternCount = patternToDist.get(currentPattern)?.reduce((a, b) => a + b, 0) ?? 0;
+  const supportScore = Math.min(1, patternCount / 50);  // Need 50 samples for full confidence
+
+  const uniquePatterns = patternToDist.size;
+  const specificityScore = Math.min(1, 6 / uniquePatterns);  // Fewer patterns = more specific
+
+  // Recent pattern match quality
+  const recentMatches = [];
+  for (let i = Math.max(k, rounds.length - 100); i < rounds.length - k; i++) {
+    const windowPattern = rounds.slice(i - k, i).map((r) => encodeBand(r.multiplier)).join("");
+    if (windowPattern === currentPattern) recentMatches.push(i);
+  }
+  const recentMatchScore = Math.min(1, recentMatches.length / 10);  // Recent matches = higher confidence
+
+  // Combine factors
+  const confidence = (
+    supportScore * 0.5 +
+    specificityScore * 0.2 +
+    recentMatchScore * 0.3
+  );
+
+  // Clamp to [0.1, 0.9]
+  const finalConfidence = Math.max(0.1, Math.min(0.9, confidence));
+
+  // Adaptive blend based on confidence
+  const blendRatio = 0.3 + finalConfidence * 0.5;  // Range [0.3, 0.75]
+
+  // Support-aware smoothing
+  const supportMultiplier = Math.min(1, patternCount / 30);
+  const adjustedRatio = blendRatio * supportMultiplier;
+
   // Blend pattern distribution with baseline
-  const blend = patternDist.map((p, i) => p * 0.6 + base[i] * 0.4);
+  const blend = patternDist.map((p, i) => p * adjustedRatio + base[i] * (1 - adjustedRatio));
   return normalize(blend);
 }
 
 /**
  * Linguistics token distribution: maps recent linguistic tokens to band probabilities.
- * Uses token frequency and recent weighting.
+ * Uses full multi-layer tokens, adaptive window, adaptive decay, and token confidence.
  */
 export function linguisticsTokenDistribution(rounds: Round[]): number[] {
   const base = bandShares(rounds.map((r) => r.multiplier));
@@ -791,11 +852,10 @@ export function linguisticsTokenDistribution(rounds: Round[]): number[] {
   const ling = linguistics(rounds, 200);
   const tokenToDist = new Map<string, number[]>();
 
-  // Build token→distribution mapping
+  // Build token→distribution mapping using full multi-layer tokens
   for (let i = 0; i < rounds.length - 1; i++) {
     const r = rounds[i];
-    const band = r.multiplier < 1.5 ? "dust" : r.multiplier < 2 ? "floor" : r.multiplier < 5 ? "low" : r.multiplier < 10 ? "base" : r.multiplier < 100 ? "high" : "mega";
-    const token = `${band}`;
+    const token = r.token;  // Full multi-layer token
     const nextBand = bandIndex(rounds[i + 1].multiplier);
     const dist = tokenToDist.get(token) ?? [0, 0, 0, 0, 0, 0];
     dist[nextBand]++;
@@ -808,14 +868,41 @@ export function linguisticsTokenDistribution(rounds: Round[]): number[] {
     tokenToDist.set(token, counts.map((c) => c / sum));
   }
 
-  // Weight recent tokens
-  const recentTokens = ling.recent.slice(-20).map((r) => r.token.split("·")[0]);
+  // Adaptive window size based on token diversity
+  const tokenDiversity = new Set(ling.recent.map(r => r.token)).size;
+  const adaptiveWindow = Math.min(30, Math.max(10, Math.round(tokenDiversity * 2)));
+
+  // Adaptive decay rate based on token relevance
+  const recentUniqueness = new Set(ling.recent.slice(-10).map(r => r.token)).size / 10;
+  const adaptiveDecay = 5 + (1 - recentUniqueness) * 10;  // Range [5, 15]
+
+  // Token confidence computation
+  const computeTokenConfidence = (token: string): number => {
+    const tokenFreq = tokenToDist.get(token)?.reduce((a, b) => a + b, 0) ?? 0;
+    const supportScore = Math.min(1, tokenFreq / 20);
+
+    const layerCount = token.split("·").length;
+    const richnessScore = Math.min(1, layerCount / 7);  // 7 layers max
+
+    const tokenRecency = ling.recent.slice(-20).filter(r => r.token === token).length;
+    const recencyScore = Math.min(1, tokenRecency / 5);
+
+    return (
+      supportScore * 0.5 +
+      richnessScore * 0.3 +
+      recencyScore * 0.2
+    );
+  };
+
+  // Weight recent tokens with confidence
+  const recentTokens = ling.recent.slice(-adaptiveWindow).map((r) => r.token);
   let weightedDist = new Array(6).fill(0);
   let totalWeight = 0;
 
   for (let i = 0; i < recentTokens.length; i++) {
     const token = recentTokens[i];
-    const weight = Math.exp(-i / 10);
+    const tokenConf = computeTokenConfidence(token);
+    const weight = Math.exp(-i / adaptiveDecay) * tokenConf;
     const dist = tokenToDist.get(token) ?? base;
     weightedDist = weightedDist.map((x, j) => x + dist[j] * weight);
     totalWeight += weight;
@@ -827,6 +914,7 @@ export function linguisticsTokenDistribution(rounds: Round[]): number[] {
 
 /**
  * Shape distribution: maps current shape classification to band probabilities.
+ * Now with confidence, support-aware smoothing, and recent shape trend weighting.
  */
 export function shapeDistribution(rounds: Round[]): number[] {
   const base = bandShares(rounds.map((r) => r.multiplier));
@@ -854,7 +942,28 @@ export function shapeDistribution(rounds: Round[]): number[] {
   // Get distribution for current shape
   const shapeDist = shapeToDist.get(shapeData.classification) ?? base;
 
+  // Check support for this shape classification
+  const shapeCounts = shapeToDist.get(shapeData.classification);
+  const support = shapeCounts ? shapeCounts.reduce((a, b) => a + b, 0) : 0;
+
+  // Adjust confidence based on support
+  const supportMultiplier = Math.min(1, support / 50);
+  const adjustedConfidence = shapeData.confidence * supportMultiplier;
+
+  // Recent shape trend weighting
+  const recentShapes: string[] = [];
+  for (let i = Math.max(80, rounds.length - 20); i < rounds.length - 1; i++) {
+    const window = rounds.slice(i - 80, i);
+    recentShapes.push(shape(window, 80).classification);
+  }
+
+  const matchCount = recentShapes.filter(s => s === shapeData.classification).length;
+  const shapeConsistency = recentShapes.length > 0 ? matchCount / recentShapes.length : 0;
+
+  // Boost confidence if shape is consistent
+  const consistencyBoost = shapeConsistency > 0.6 ? 0.1 : 0;
+  const finalConfidence = Math.min(0.9, adjustedConfidence + consistencyBoost);
+
   // Blend with baseline based on confidence
-  const confidence = shapeData.confidence;
-  return shapeDist.map((p, i) => p * confidence + base[i] * (1 - confidence));
+  return shapeDist.map((p, i) => p * finalConfidence + base[i] * (1 - finalConfidence));
 }

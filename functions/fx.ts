@@ -524,35 +524,49 @@ export function fxDistribution(rounds: Round[]): number[] {
   const rev = meanReversion(rounds);
   const brk = breakout(rounds);
 
-  // Regime-based tilt
-  let regimeTilt = 0;
-  if (vol.regime === "compressed") regimeTilt = -0.1;
-  else if (vol.regime === "expanded") regimeTilt = 0.1;
+  // Signal confidence scores
+  const volConfidence = vol.regime === "compressed" || vol.regime === "expanded"
+    ? Math.min(1, (vol.volPercentile - 0.5) * 2)
+    : 0;
 
-  // Trend-based tilt
-  let trendTilt = 0;
-  if (trend.direction === "up") trendTilt = 0.15;
-  else if (trend.direction === "down") trendTilt = -0.15;
+  const trendConfidence = trend.classification === "trending"
+    ? Math.min(1, trend.efficiency)
+    : 0;
 
-  // Mean reversion tilt
-  let revTilt = 0;
-  if (rev.hurst < 0.45) revTilt = -0.2;
-  else if (rev.hurst > 0.55) revTilt = 0.2;
+  const revConfidence = Math.min(1, Math.abs(rev.zScore) / 2);
 
-  // Breakout tilt
-  let breakoutTilt = 0;
-  if (brk.compressionPercentile > 0.8 && brk.postCompressionBreakRate > brk.baseBreakRate * 1.1) {
-    breakoutTilt = 0.25;
-  }
+  const breakoutConfidence = brk.compressionPercentile > 0.8
+    ? Math.min(1, (brk.compressionPercentile - 0.8) * 5)
+    : 0;
 
-  // Combine tilts
-  const totalTilt = Math.max(-0.5, Math.min(0.5, regimeTilt + trendTilt + revTilt + breakoutTilt));
+  // Base tilt weights
+  const baseRegimeTilt = vol.regime === "compressed" ? -0.1 : vol.regime === "expanded" ? 0.1 : 0;
+  const baseTrendTilt = trend.direction === "up" ? 0.15 : trend.direction === "down" ? -0.15 : 0;
+  const baseRevTilt = rev.hurst < 0.45 ? -0.2 : rev.hurst > 0.55 ? 0.2 : 0;
+  const baseBreakoutTilt = brk.compressionPercentile > 0.8 && brk.postCompressionBreakRate > brk.baseBreakRate * 1.1 ? 0.25 : 0;
+
+  // Apply confidence scaling
+  const regimeTilt = baseRegimeTilt * volConfidence;
+  const trendTilt = baseTrendTilt * trendConfidence;
+  const revTilt = baseRevTilt * revConfidence;
+  const breakoutTilt = baseBreakoutTilt * breakoutConfidence;
+
+  // Adaptive lambda based on overall signal strength
+  const signalStrength = (volConfidence + trendConfidence + revConfidence + breakoutConfidence) / 4;
+  const adaptiveLambda = 0.2 + signalStrength * 0.3;  // Range [0.2, 0.5]
+
+  // Adaptive clamp based on signal consensus
+  const positiveTilts = [regimeTilt, trendTilt, revTilt, breakoutTilt].filter(t => t > 0).length;
+  const negativeTilts = [regimeTilt, trendTilt, revTilt, breakoutTilt].filter(t => t < 0).length;
+  const consensus = Math.max(positiveTilts, negativeTilts) / 4;
+
+  const adaptiveClamp = 0.3 + consensus * 0.4;  // Range [0.3, 0.7]
+  const totalTilt = Math.max(-adaptiveClamp, Math.min(adaptiveClamp, regimeTilt + trendTilt + revTilt + breakoutTilt));
 
   // Apply tilt to baseline distribution
   const tilt = (dist: number[], s: number): number[] => {
     const mid = (dist.length - 1) / 2;
-    const lambda = 0.35;
-    return dist.map((p, i) => p * Math.exp(lambda * s * ((i - mid) / mid)));
+    return dist.map((p, i) => p * Math.exp(adaptiveLambda * s * ((i - mid) / mid)));
   };
 
   const tilted = tilt(base, totalTilt);

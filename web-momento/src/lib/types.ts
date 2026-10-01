@@ -530,6 +530,7 @@ export interface IntelComponent {
   distribution: number[];
   logLoss: number | null;
   samples: number;
+  confidence?: number;  // Confidence score for adaptive engines
 }
 
 export interface IntelSignal {
