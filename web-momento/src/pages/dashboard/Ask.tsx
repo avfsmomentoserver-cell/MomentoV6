@@ -53,13 +53,13 @@ export default function Ask() {
   };
   return (
     <div className="animate-in-up space-y-4">
-      <PageHeader title="Ask Momento" subtitle={`Platform Book F-37. Questions are answered only from ${idx.passages.length.toLocaleString()} passages of the platform docs and the Platform Book, with passage citations. If the passages don't support an answer, it refuses.`} />
+      <PageHeader title="Ask Momento" subtitle={`Platform Book F-37. Questions are answered from ${idx.passages.length.toLocaleString()} documentation passages, database context (live stats, intelligence, recent rounds), and general knowledge for experimentation, testing, and research. Citations are provided when documentation is used.`} />
       <Panel>
         <div className="flex gap-2">
           <input className={`${inputCls} flex-1`} value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && ask()} placeholder="e.g. How is the track record made tamper-evident?" />
           <button type="button" className={btnCls} disabled={busy} onClick={ask}><Send className="h-4 w-4" />{busy ? "Thinking…" : "Ask"}</button>
         </div>
-        <div className="mt-2 flex flex-wrap gap-2">{["What is the house edge?", "How does the ETA board decide a gap is long?", "What does shadow mode mean for an engine?", "Why are reconstructed rounds never scored?"].map((s) => <button key={s} type="button" className="rounded-md border border-border px-2 py-1 text-[11.5px] text-muted-foreground hover:text-foreground" onClick={() => setQ(s)}>{s}</button>)}</div>
+        <div className="mt-2 flex flex-wrap gap-2">{["What is the house edge?", "How does the ETA board decide a gap is long?", "What does shadow mode mean for an engine?", "Why are reconstructed rounds never scored?", "What's the current intelligence state?", "How do I test a new strategy?", "What patterns should I watch for?"].map((s) => <button key={s} type="button" className="rounded-md border border-border px-2 py-1 text-[11.5px] text-muted-foreground hover:text-foreground" onClick={() => setQ(s)}>{s}</button>)}</div>
       </Panel>
       {ans && (
         <Panel title="Answer" right={<Verdict ok={!ans.refused}>{ans.refused ? "refused — not in sources" : `${ans.citations.length} citation(s)`}</Verdict>}>

@@ -8,6 +8,7 @@
     "deploy": "wrangler deploy"
   },
   "devDependencies": {
+    "dotenv": "^18.0.5",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2",
     "wrangler": "^4.136.1"

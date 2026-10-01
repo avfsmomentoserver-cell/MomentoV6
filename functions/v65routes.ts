@@ -869,36 +869,72 @@ function explain(a: CoreAdapter, fRow: Rows, rounds: Round[]) {
 
 async function askMomento(a: CoreAdapter, question: string, passages: { id: string; title: string; text: string }[]) {
   const key = (a.env.ENTRIM_API_KEY as string) || a.setting("entrim_api_key") || "";
-  if (!passages.length) return { answer: null, refused: true, reason: "No knowledge passages matched the question, so Ask Momento refuses rather than guess.", citations: [] };
+  
+  // Gather database context for richer answers
+  const stats = a.tableStats();
+  const all = a.roundsFor(null);
+  const intel = a.intel(all, "all") as Record<string, unknown>;
+  const analysis = a.analysis(null) as Record<string, Record<string, unknown>>;
+  const lastRounds = all.slice(-10).map((r) => ({ id: r.id, multiplier: r.multiplier, ts: r.ts_ms }));
+  const dbContext = {
+    platformStats: { totalRounds: stats.count, maxId: stats.maxId, fromTs: stats.minTs, toTs: stats.maxTs },
+    currentIntelligence: {
+      state: intel.state,
+      expectedMultiplier: intel.expectedMultiplier,
+      range: [intel.rangeLo, intel.rangeHi],
+      confidence: intel.confidence,
+    },
+    recentRounds: lastRounds,
+    analysis: {
+      pressure: analysis.pressure ? (analysis.pressure as Record<string, unknown>).overallPressure : null,
+      moonshot: analysis.moonshot ?? null,
+    },
+  };
+  
   if (!key) {
+    const contextText = passages.length 
+      ? passages.slice(0, 3).map((p) => `- ${p.text.slice(0, 280).trim()}… [${p.id}]`).join("\n")
+      : "No documentation passages matched.";
     return {
-      answer: `Closest knowledge (no AI key set — extractive answer):\n\n${passages.slice(0, 3).map((p) => `- ${p.text.slice(0, 280).trim()}… [${p.id}]`).join("\n")}`,
+      answer: `Closest knowledge (no AI key set — extractive answer):\n\n${contextText}\n\nDB Context: ${JSON.stringify(dbContext, null, 2)}`,
       refused: false,
       citations: passages.slice(0, 3).map((p) => p.id),
       model: "extractive",
     };
   }
+  
   const base = (a.setting("entrim_base_url") || "https://api.entrim.ai/v1").replace(/\/+$/, "");
   const model = a.setting("entrim_model") || "deepseek-ai/DeepSeek-V4-Flash";
+  
+  const passageText = passages.length 
+    ? passages.map((p) => `[${p.id}] (${p.title}) ${p.text.slice(0, 1400)}`).join("\n\n")
+    : "(No documentation passages matched - answer from database context and general knowledge)";
+  
   try {
     const res = await fetch(`${base}/chat/completions`, {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model,
-        temperature: 0.1,
-        max_tokens: 700,
+        temperature: 0.3,
+        max_tokens: 1200,
         messages: [
-          { role: "system", content: "You answer questions about the Momento platform ONLY from the numbered passages. Cite every claim with the passage id in square brackets, e.g. [ch08#3]. If the passages do not answer the question, reply exactly: NO_ANSWER. Under 180 words." },
-          { role: "user", content: `Question: ${question}\n\nPassages:\n${passages.map((p) => `[${p.id}] (${p.title}) ${p.text.slice(0, 1400)}`).join("\n\n")}` },
+          { 
+            role: "system", 
+            content: "You are a Momento platform expert answering questions. Use documentation passages when available (cite with [id]). When passages don't cover the topic, use the database context and your general knowledge to provide helpful answers for experimentation, testing, and research. Be practical and specific. If completely unsure, say so rather than guess. Under 300 words." 
+          },
+          { 
+            role: "user", 
+            content: `Question: ${question}\n\nDocumentation Passages:\n${passageText}\n\nDatabase Context:\n${JSON.stringify(dbContext, null, 2)}` 
+          },
         ],
       }),
-      signal: AbortSignal.timeout(45_000),
+      signal: AbortSignal.timeout(60_000),
     });
     const body = (await res.json()) as { choices?: { message?: { content?: string } }[] };
     const text = body.choices?.[0]?.message?.content?.trim() ?? "";
     const cited = [...new Set((text.match(/\[([^\]]+)\]/g) ?? []).map((s) => s.slice(1, -1)))].filter((id) => passages.some((p) => p.id === id));
-    if (!text || text.includes("NO_ANSWER") || !cited.length) return { answer: null, refused: true, reason: "The answer did not cite a valid knowledge object, so it was refused.", citations: [], model };
+    if (!text) return { answer: null, refused: true, reason: "No response from AI provider.", citations: [], model };
     return { answer: text, refused: false, citations: cited, model };
   } catch (e) {
     return { answer: null, refused: true, reason: `AI provider unreachable: ${e instanceof Error ? e.message : String(e)}`, citations: [] };
