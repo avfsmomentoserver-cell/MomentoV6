@@ -76,9 +76,10 @@ Docs read: `docs/SYSTEM_SPEC.md`, `core/REVISED_ARCHITECTURE_UI_LOGIC_SEPARATION
 ```
 backend/
   pyproject.toml          deps: fastapi, uvicorn, numpy; extras: ml (scikit-learn)
-  momento/                domain (pure, no FastAPI imports)
-    core/                 vendored momento_core (linguistics, analysis, prediction, signals,
-                          plugins, orchestrator, autopilot) — fixed to green
+  momento_core/           vendored attached core, package name kept so its 83 internal
+                          imports and 209 tests work unchanged (linguistics, analysis,
+                          prediction, signals, plugins, orchestrator, autopilot) — fixed to green
+  momento/                new domain code (pure, no FastAPI imports)
     data/                 rounds, sources, sessions, ingest (validation, dedupe, quarantine,
                           nonces), reconstruct, seed, integrity, collectors
     intelligence/         mixture (8 components + extras), calibration, recalibrator,
@@ -118,8 +119,8 @@ Request → CORS → as_of middleware (sets a context var) → auth dependency (
 
 | Phase | Scope | Done when |
 |---|---|---|
-| **P0** | Branch `afresh`; archive the TS backend to `archive/backend-ts-v6.5/`; this plan | Pushed (this commit) |
-| **P1** | Vendor `momento_core` into `backend/momento/core/`; fix the 27 failing tests; drop the SQLAlchemy coupling from the pure modules | Vendored suite green |
+| **P0** ✅ | Branch `afresh`; archive the TS backend to `archive/backend-ts-v6.5/`; this plan | Pushed (this commit) |
+| **P1** ✅ | Vendor `momento_core` into `backend/momento_core/`; fix the 27 failing tests; drop the SQLAlchemy coupling from the pure modules | Vendored suite green |
 | **P2** | Storage + app skeleton: schema, repository, envelope, auth (PBKDF2-compatible), settings, audit, health, users, sources, ingest, rounds, sessions, export/import | Login, ingest and rounds work against the unchanged frontend |
 | **P3** | Intelligence port: mixture, calibration, recalibrator, robust evaluation, point_range, engine_gate, analogue, pipeline, scoring, evidence; forecast and research routes | Golden parity tests pass; the forecast page renders |
 | **P4** | Analysis, linguistics (core engine), momentum, DNA, range lab, mega-pressure, investigate, market, charts / shapes, fair, FX | Every analysis and chart page renders with live data |
