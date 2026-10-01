@@ -655,23 +655,6 @@ export interface IntelligenceBlock {
     momentumSpeed: number;
     finalScale: number;
   };
-  /** blend mids for all engines including new intelligence engines */
-  blend: {
-    markovMid: number;
-    percentileMid: number;
-    dnaMid: number;
-    bandMid: number;
-    mlMid: number;
-    ensembleMid: number;
-    signalsMid: number;
-    baselineMid: number;
-    dnaPatternMid: number;
-    linguisticsMid: number;
-    shapeMid: number;
-    fxRegimeMid: number;
-    laddersMid: number;
-    resistanceMid: number;
-  };
   /** collapse, ascend, and resistance forecast data */
   collapseAscendResistance?: {
     collapse: { active: boolean; run: number; strength: number; ceiling: number };
