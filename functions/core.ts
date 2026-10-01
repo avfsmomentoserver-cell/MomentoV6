@@ -49,7 +49,8 @@ import {
   windowProbability,
   type WindowDef,
 } from "./pipeline";
-import { fitRecalibrator, reliabilityTable, sanitizeDist, survivalAt, type CalSample, type Recalibrator } from "./calibration";
+import { fitRecalibrator, rangeProfile, reliabilityTable, sanitizeDist, survivalAt, type CalSample, type Recalibrator } from "./calibration";
+import { defaultSelection, selectPointRange, type PointRangeSelection } from "./point-range";
 import { evaluateLockedHoldout, gateConfidence, summarizeEvidence, unavailableEvidence, type ForecastEvidence, type LockedHoldoutEvidence } from "./robust-evaluation";
 import {
   anchors,
@@ -1332,6 +1333,35 @@ export class MomentoCore extends DurableObject {
     return this.evidenceCache;
   }
 
+  private pointRangeCache: { key: string; value: PointRangeSelection } | null = null;
+
+  /**
+   * Point / interval method and adaptive coverage for the headline, chosen on
+   * resolved ledger rows that already landed (point-range.ts). Settings:
+   * point_method = auto|median|geomean|trimmed, range_method = auto|central|shortest,
+   * range_adaptive = 1|0. Refreshed on the recalibrator cadence.
+   */
+  private intelPointRange(): PointRangeSelection {
+    const sql = this.ctx.storage.sql;
+    const stamp = sql.exec("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS id FROM intel_calibrations").toArray()[0] as { n: number; id: number };
+    const prof = rangeProfile(this.setting("range_profile"));
+    const pm = this.setting("point_method") ?? "auto";
+    const im = this.setting("range_method") ?? "auto";
+    const adaptive = this.setting("range_adaptive") !== "0";
+    const rc = this.intelRecalibrator();
+    const key = `${Math.floor(stamp.n / 10)}:${this.asOfMs ?? "live"}:${prof.name}:${pm}:${im}:${adaptive}:${rc.active}:${rc.gamma}:${rc.tau}`;
+    if (this.pointRangeCache?.key === key) return this.pointRangeCache.value;
+    let value: PointRangeSelection;
+    try {
+      value = selectPointRange(this.intelCalSamples(600), rc, { nominal: prof.nominal, pointMethod: pm, intervalMethod: im, adaptive });
+    } catch (e) {
+      console.error("[momento-v6] point/range selection failed", e);
+      value = defaultSelection(prof.nominal, "Point/range selection failed — median and equal-tailed range published.");
+    }
+    this.pointRangeCache = { key, value };
+    return value;
+  }
+
   private intelForecastCache = new Map<string, FullIntelligenceForecast>();
 
   /**
@@ -1346,7 +1376,7 @@ export class MomentoCore extends DurableObject {
     const head = rounds[rounds.length - 1];
     const stamp = sql.exec("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS id FROM intel_calibrations").toArray()[0] as { n: number; id: number };
     const regKey = JSON.stringify(reg.states) + "|" + reg.extras.map((e) => e.key).join(",");
-    const key = [source, rounds.length, head?.id ?? 0, head?.tsMs ?? 0, head?.multiplier ?? 0, stamp.n, stamp.id, this.asOfMs ?? "live", regKey, this.setting("intel_recalibration") ?? "1", this.setting("range_profile") ?? "loose", this.setting("evidence_gate") ?? "1"].join(":");
+    const key = [source, rounds.length, head?.id ?? 0, head?.tsMs ?? 0, head?.multiplier ?? 0, stamp.n, stamp.id, this.asOfMs ?? "live", regKey, this.setting("intel_recalibration") ?? "1", this.setting("range_profile") ?? "loose", this.setting("evidence_gate") ?? "1", this.setting("point_method") ?? "auto", this.setting("range_method") ?? "auto", this.setting("range_adaptive") ?? "1"].join(":");
     const hit = this.intelForecastCache.get(key);
     if (hit) return hit;
     const corr = this.intelCorrection();
@@ -1359,6 +1389,7 @@ export class MomentoCore extends DurableObject {
       correctionSample: corr.sampleSize,
       recalibrator: this.intelRecalibrator(),
       rangeProfile: this.setting("range_profile"),
+      pointRange: this.intelPointRange(),
     });
     // evidence gate: attach provenance and stop the label implying skill that
     // the locked holdout has not shown (setting evidence_gate = 0 disables the cap)
@@ -1402,6 +1433,7 @@ export class MomentoCore extends DurableObject {
         // walk-forward: fitted only on rows created before this round
         recalibrator: this.intelRecalibrator(),
         rangeProfile: this.setting("range_profile"),
+        pointRange: this.intelPointRange(),
       });
       // score the raw (uncorrected) point estimate so rectification measures drift, not itself
       const rawF = { ...f, expectedMultiplier: f.baseMultiplier };
@@ -2103,6 +2135,11 @@ export class MomentoCore extends DurableObject {
       const samples = this.intelCalSamples(clampInt(this.setting("intel_recalibration_window") ?? "1000", 100, 3000, 1000));
       return ok({ recalibrator: rc, reliability: reliabilityTable(samples, rc), bands: BAND_LABELS, sample: samples.length, evidence: this.intelEvidence().value });
     }
+    if (path === "/api/v1/research/point-range" && method === "GET") {
+      // Which point estimator / interval method the headline uses and why,
+      // with held-out scores for every candidate.
+      return ok({ selection: this.intelPointRange() });
+    }
     if (path === "/api/v1/research/evidence" && method === "GET") {
       // Locked chronological holdout: published vs raw vs unconditional baseline,
       // per-threshold reliability and p25–p75 coverage on untouched rounds.
@@ -2341,6 +2378,8 @@ export class MomentoCore extends DurableObject {
       sql.exec("DELETE FROM intel_calibrations");
       this.intelLedgerCache = null;
       this.recalibratorCache = null;
+      this.pointRangeCache = null;
+      this.evidenceCache = null;
       this.intelForecastCache.clear();
       const scored = this.calibrateIntel(this.roundsFor(null));
       return ok({ scored });

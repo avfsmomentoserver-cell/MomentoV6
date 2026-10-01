@@ -273,3 +273,51 @@ The headline range is now a **loose** central interval by default:
   gate still caps the label at LOW unless the locked holdout shows skill.
 - Backtest: `npm run predictor:backtest -- --profile tight|loose|wide`
   (`covRange` = share inside the headline range).
+
+## Robust branch: earned point estimate and range method
+
+`functions/point-range.ts` chooses how `expectedMultiplier` and the headline
+range are read off the calibrated distribution, on resolved ledger rows only.
+
+Point estimate candidates (default `point_method = auto`):
+
+| Method | Definition | Best for |
+|---|---|---|
+| `median` | Q(0.5) | absolute log error; moves only when the middle moves |
+| `geomean` | exp E[log X] (top 0.5% cut) | squared log error; uses the whole shape |
+| `trimmed` | exp mean log Q(u), u in [0.1, 0.9] | robust middle ground |
+
+Range candidates (default `range_method = auto`): equal-tailed `central`, or
+`shortest` (narrowest log-space window with the same coverage), compared by
+the interval (Winkler) score at the profile's nominal coverage.
+
+Adaptive coverage (`range_adaptive = 1`, ACI): the level is nudged by recent
+misses (bounded to nominal ± 15 points). It is kept only if it brings
+realised coverage closer to nominal at no more than one SE of interval-score
+cost.
+
+Rule for every choice: an alternative replaces the default (median, central,
+fixed level) only if it beats it by more than one standard error of the paired
+per-round difference over the last 600 resolved rounds. Below 100 resolved
+rounds the defaults are kept. Refreshed every 10 ledger rows.
+
+- The forecast carries `pointRange` (method, interval, coverage, sample, the
+  median for reference, reason); `quantiles.p50` is always the median.
+- `GET /api/v1/research/point-range` lists every candidate's held-out score.
+- `band` is the band of the published expected value, so it can differ from
+  the band of the median.
+
+Backtest (`--point`, `--range`, `--adaptive` flags; 500 scored rounds, loose):
+
+| Scenario | Method | sq. log error | abs. log error | interval score | expected SD (log) |
+|---|---|---|---|---|---|
+| iid | median (before) | 1.190 | 0.738 | 3.000 | 0.028 |
+| iid | earned (geomean) | 1.087 | 0.786 | 2.993 | 0.177 |
+| drift | median (before) | 1.018 | 0.680 | 2.825 | 0.035 |
+| drift | earned (geomean) | 0.955 | 0.716 | 2.831 | 0.106 |
+
+The geometric mean is closer on average in ratio terms and much more
+responsive, at the cost of absolute log error, and it sits above the median
+(about 61% of rounds land below it). On the i.i.d. tape the extra movement
+follows noise in the mixture, not information about the next round; the
+locked-holdout evidence still reports no demonstrated skill.

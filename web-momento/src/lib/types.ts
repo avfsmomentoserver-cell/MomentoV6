@@ -481,6 +481,8 @@ export interface NextRoundForecast {
   moonshotReach: number;
   /** headline range profile (default "loose" = p15–p85, ~70% of rounds) */
   rangeProfile?: { name: "tight" | "loose" | "wide"; lo: number; hi: number; reach: number; nominal: number; label: string };
+  /** how expected and the range were read off the distribution (point-range.ts) */
+  pointRange?: { pointMethod: "median" | "geomean" | "trimmed"; intervalMethod: "central" | "shortest"; coverage: number; nominal: number; adaptive: boolean; sample: number; median: number; reason: string };
   /** exact quantiles of the published distribution */
   quantiles?: { p05: number; p10: number; p15: number; p25: number; p50: number; p75: number; p85: number; p90: number; p95: number };
   rectification: { active: boolean; factor: number; biasPct: number; sampleSize: number; note: string } | null;

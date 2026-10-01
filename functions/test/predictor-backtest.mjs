@@ -13,6 +13,7 @@
 import { fitRecalibrator } from "../.predictor-build/calibration.mjs";
 import { fullIntelligenceForecast } from "../.predictor-build/intelligence.mjs";
 import { evaluateLockedHoldout } from "../.predictor-build/robust-evaluation.mjs";
+import { selectPointRange, defaultSelection } from "../.predictor-build/point-range.mjs";
 import { syntheticTape } from "./synthetic.mjs";
 
 const arg = (k, d) => {
@@ -24,6 +25,10 @@ const scored = Number(arg("scored", 800));
 const warmup = Number(arg("warmup", 1500));
 const seed = Number(arg("seed", 7));
 const profile = arg("profile", "loose");
+const NOMINAL = { tight: 0.5, loose: 0.7, wide: 0.8 }[profile] ?? 0.7;
+const pointArg = arg("point", "auto");
+const rangeArg = arg("range", "auto");
+const adaptiveArg = arg("adaptive", "1") !== "0";
 const oldPath = arg("old", null);
 const old = oldPath ? await import(new URL(oldPath, `file://${process.cwd()}/`).href) : null;
 const oldEta = oldPath ? await import(new URL(oldPath.replace(/[^/]+$/, "old-v65.mjs"), `file://${process.cwd()}/`).href).catch(() => null) : null;
@@ -33,17 +38,22 @@ const tape = syntheticTape(warmup + scored, { seed, edge: 0.03, edgeAt });
 const bandOf = (x) => [1.5, 2, 5, 10, 100].filter((e) => x >= e).length;
 const pin = (q, pred, y) => (y >= pred ? q * (y - pred) : (1 - q) * (pred - y));
 
-const methods = { main: [], calibrated: [], ...(old ? { oldPredictor: [] } : {}) };
+const methods = { main: [], calibrated: [], dynamic: [], ...(old ? { oldPredictor: [] } : {}) };
+let sel = defaultSelection(NOMINAL, "warm-up");
 const samples = [];
 let rc = fitRecalibrator([]);
 const t0 = Date.now();
 for (let i = warmup; i < tape.length; i++) {
   const history = tape.slice(0, i);
   const y = tape[i].multiplier;
-  if ((i - warmup) % 10 === 0) rc = fitRecalibrator(samples.slice(-1000));
+  if ((i - warmup) % 10 === 0) {
+    rc = fitRecalibrator(samples.slice(-1000));
+    sel = selectPointRange(samples.slice(-600), rc, { nominal: NOMINAL, pointMethod: pointArg, intervalMethod: rangeArg, adaptive: adaptiveArg });
+  }
   const fc = fullIntelligenceForecast(history, "all", { recalibrator: rc, rangeProfile: profile });
   const fm = fullIntelligenceForecast(history, "all", { rangeProfile: profile });
-  const out = { main: fm, calibrated: fc };
+  const fd = fullIntelligenceForecast(history, "all", { recalibrator: rc, rangeProfile: profile, pointRange: sel });
+  const out = { main: fm, calibrated: fc, dynamic: fd };
   if (old) {
     let etaMedian;
     try {
@@ -66,6 +76,11 @@ for (let i = warmup; i < tape.length; i++) {
       below: y <= f.expectedMultiplier ? 1 : 0,
       pin: (pin(0.25, f.rangeLo, y) + pin(0.5, f.expectedMultiplier, y) + pin(0.75, f.rangeHi, y) + pin(0.9, f.moonshotReach, y)) / 4,
       crash: dist[0] + dist[1],
+      sle: (Math.log(y) - Math.log(f.expectedMultiplier)) ** 2,
+      ale: Math.abs(Math.log(y) - Math.log(f.expectedMultiplier)),
+      iscore: (() => { const a = 1 - NOMINAL, L = Math.log(f.rangeLo), H = Math.log(f.rangeHi), z = Math.log(y); return H - L + (2 / a) * (Math.max(0, L - z) + Math.max(0, z - H)); })(),
+      logExp: Math.log(f.expectedMultiplier),
+      logWidth: Math.log(f.rangeHi) - Math.log(f.rangeLo),
       isCrash: y < 2 ? 1 : 0,
     });
   }
@@ -81,6 +96,12 @@ for (const [k, rows] of Object.entries(methods)) {
     belowExp: +mean(rows.map((r) => r.below)).toFixed(3),
     pinball: +mean(rows.map((r) => r.pin)).toFixed(4),
     crashGap: +Math.abs(mean(rows.map((r) => r.crash)) - mean(rows.map((r) => r.isCrash))).toFixed(4),
+    sqLogErr: +mean(rows.map((r) => r.sle)).toFixed(4),
+    absLogErr: +mean(rows.map((r) => r.ale)).toFixed(4),
+    intervalScore: +mean(rows.map((r) => r.iscore)).toFixed(4),
+    // dynamics: how much the headline moves round to round
+    expectedSdLog: +Math.sqrt(mean(rows.map((r) => r.logExp ** 2)) - mean(rows.map((r) => r.logExp)) ** 2).toFixed(4),
+    meanLogWidth: +mean(rows.map((r) => r.logWidth)).toFixed(4),
   };
 }
 // locked chronological holdout over the resolved raw distributions: does the
@@ -98,4 +119,4 @@ const lockedHoldout = {
   rangeCoverage: ev.rangeCoverage === null ? null : +ev.rangeCoverage.toFixed(3),
   rangeNominal: ev.rangeNominal,
 };
-console.log(JSON.stringify({ scenario, seed, profile, warmup, scored, lockedHoldout, finalRecalibrator: { active: rc.active, quantileActive: rc.quantileActive, gamma: rc.gamma, tau: rc.tau, reason: rc.reason }, report }, null, 2));
+console.log(JSON.stringify({ scenario, seed, profile, finalSelection: { point: sel.pointMethod, interval: sel.intervalMethod, coverage: +sel.coverage.toFixed(4), reason: sel.reason }, warmup, scored, lockedHoldout, finalRecalibrator: { active: rc.active, quantileActive: rc.quantileActive, gamma: rc.gamma, tau: rc.tau, reason: rc.reason }, report }, null, 2));

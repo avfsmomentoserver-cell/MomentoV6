@@ -17,6 +17,7 @@
 // Pure module: rounds in, forecast out. No I/O.
 
 import type { ForecastEvidence } from "./robust-evaluation";
+import { interval as pointRangeInterval, pointEstimate, type PointRangeSelection } from "./point-range";
 import {
   BAND_EDGES,
   BAND_LABELS,
@@ -654,6 +655,8 @@ export interface FullIntelligenceForecast {
   /** which central interval rangeLo–rangeHi is (default "loose" = p15–p85, ~70% of rounds) */
   rangeProfile: { name: RangeProfileName; lo: number; hi: number; reach: number; nominal: number; label: string };
   /** exact quantiles of the published (calibrated) distribution */
+  /** how expected and the range were read off the distribution */
+  pointRange: { pointMethod: string; intervalMethod: string; coverage: number; nominal: number; adaptive: boolean; sample: number; median: number; reason: string };
   quantiles: { p05: number; p10: number; p15: number; p25: number; p50: number; p75: number; p85: number; p90: number; p95: number };
   rectification: { active: boolean; factor: number; biasPct: number; sampleSize: number; note: string } | null;
   lastRound: { multiplier: number; band: string };
@@ -721,6 +724,8 @@ export interface IntelOptions {
   recalibrator?: Recalibrator | null;
   /** headline range profile: "tight" p25–p75, "loose" p15–p85 (default), "wide" p10–p90 */
   rangeProfile?: RangeProfileName | string | null;
+  /** point / interval method + adaptive coverage chosen on the resolved ledger (point-range.ts) */
+  pointRange?: PointRangeSelection | null;
 }
 
 const PRIOR: Record<ComponentKey, number> = {
@@ -1025,9 +1030,27 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
   const qReach = quantileOf(calibrated, lvl.reach);
   // the rectification shifts the whole central block (in log space) so the
   // range keeps bracketing the point estimate
-  const expected = Math.max(1, qExpected * factor);
-  const rangeLo = Math.max(1, Math.min(qLo * factor, expected));
-  const rangeHi = Math.max(expected, qHi * factor, rangeLo + 0.01);
+  // point / interval method earned on the ledger (point-range.ts). Below its
+  // minimum sample the selection is absent and the median / equal-tailed
+  // profile levels (with the PIT level map) are used unchanged.
+  const pr = opts.pointRange && opts.pointRange.sample > 0 && (opts.pointRange.pointMethod !== "median" || opts.pointRange.intervalMethod !== "central" || opts.pointRange.adaptive)
+    ? opts.pointRange
+    : null;
+  const qf = (q: number) => quantileOf(calibrated, q);
+  const medianPub = Math.max(1, qExpected * factor);
+  let expected = medianPub;
+  let lo0 = qLo * factor;
+  let hi0 = qHi * factor;
+  if (pr) {
+    expected = Math.max(1, (pr.pointMethod === "median" ? qExpected : pointEstimate(qf, pr.pointMethod)) * factor);
+    if (pr.intervalMethod !== "central" || pr.adaptive) {
+      const [a, b] = pointRangeInterval(qf, pr.coverage, pr.intervalMethod);
+      lo0 = a * factor;
+      hi0 = b * factor;
+    }
+  }
+  const rangeLo = Math.max(1, Math.min(lo0, expected));
+  const rangeHi = Math.max(expected, hi0, rangeLo + 0.01);
   const reach = Math.max(rangeHi, qReach * factor);
   // exact published quantiles (same distribution, same level map, same shift),
   // forced monotone so p05 ≤ … ≤ p95 always holds
@@ -1036,7 +1059,7 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
     let prev = 1;
     const out = {} as FullIntelligenceForecast["quantiles"];
     for (const [k, q] of keys) {
-      const v = k === "p50" ? expected : Math.max(1, quantileOf(calibrated, mapLevel(rc, q)) * factor);
+      const v = k === "p50" ? medianPub : Math.max(1, quantileOf(calibrated, mapLevel(rc, q)) * factor);
       prev = Math.max(prev, v);
       out[k] = r2(prev);
     }
@@ -1153,7 +1176,17 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
     baseMultiplier: r2(expectedRaw),
     tailLift: v6band.tailLift,
     moonshotReach: r2(reach),
-    rangeProfile: { ...prof, label: `${pctLabel(prof.lo)}–${pctLabel(prof.hi)}` },
+    rangeProfile: { ...prof, label: pr && (pr.intervalMethod !== "central" || pr.adaptive) ? `${Math.round(pr.coverage * 100)}% ${pr.intervalMethod === "shortest" ? "shortest" : "central"}` : `${pctLabel(prof.lo)}–${pctLabel(prof.hi)}` },
+    pointRange: {
+      pointMethod: pr?.pointMethod ?? "median",
+      intervalMethod: pr && (pr.intervalMethod !== "central" || pr.adaptive) ? pr.intervalMethod : "central",
+      coverage: r4(pr && (pr.intervalMethod !== "central" || pr.adaptive) ? pr.coverage : prof.nominal),
+      nominal: prof.nominal,
+      adaptive: !!pr?.adaptive,
+      sample: opts.pointRange?.sample ?? 0,
+      median: r2(medianPub),
+      reason: opts.pointRange?.reason ?? "Median and equal-tailed profile range (no ledger selection supplied).",
+    },
     quantiles,
     rectification: corr
       ? {

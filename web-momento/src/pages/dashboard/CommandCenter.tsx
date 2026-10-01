@@ -266,7 +266,7 @@ export default function CommandCenter() {
                     <div>
                       <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Expected</p>
                       <p className="font-data mt-0.5 text-xl font-semibold tabular-nums text-primary transition-all duration-400 ease-out">{fmtMult(nr.expectedMultiplier)}</p>
-                      <p className="mt-0.5 text-[10px] text-muted-foreground transition-all duration-400 ease-out">{nr.band} band</p>
+                      <p className="mt-0.5 text-[10px] text-muted-foreground transition-all duration-400 ease-out" title={nr.pointRange?.reason}>{nr.band} band{nr.pointRange && nr.pointRange.pointMethod !== "median" ? ` · ${nr.pointRange.pointMethod} · median ${fmtMult(nr.pointRange.median)}` : ""}</p>
                     </div>
                     <div>
                       <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Range · {nr.rangeProfile?.label ?? "p25–p75"}</p>

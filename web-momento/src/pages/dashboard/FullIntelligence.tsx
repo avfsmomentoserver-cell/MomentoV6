@@ -21,6 +21,8 @@ const STATE_COLOR: Record<MarketState, string> = {
 const STATES: MarketState[] = ["Normal", "Collapse", "Ignition", "Moonshot", "Exhaustion", "Shelf", "Bait"];
 const BAND_SHORT = ["<1.5", "1.5–2", "2–5", "5–10", "10–100", "100+"];
 
+const POINT_LABEL: Record<string, string> = { median: "median", geomean: "geometric mean", trimmed: "trimmed log-mean" };
+
 const EVIDENCE_META: Record<ForecastEvidence["status"], { label: string; cls: string }> = {
   "insufficient-data": { label: "Insufficient evidence", cls: "border-amber-400/40 bg-amber-400/10 text-amber-300" },
   "no-demonstrated-skill": { label: "No demonstrated skill", cls: "border-rose-400/40 bg-rose-400/10 text-rose-300" },
@@ -187,6 +189,13 @@ export default function FullIntelligence() {
                     {f.rangeProfile?.label ?? "p25–p75"} {fmtMult(f.rangeLo)} – {fmtMult(f.rangeHi)} · reach p{Math.round((f.rangeProfile?.reach ?? 0.9) * 100)} {fmtMult(f.moonshotReach)}
                     {f.rangeProfile ? ` · holds ~${fmtPct(f.rangeProfile.nominal, 0)} of rounds` : ""}
                   </p>
+                  {f.pointRange ? (
+                    <p className="text-[11px] text-muted-foreground" title={f.pointRange.reason}>
+                      expected = {POINT_LABEL[f.pointRange.pointMethod] ?? f.pointRange.pointMethod}
+                      {f.pointRange.pointMethod !== "median" ? ` (median ${fmtMult(f.pointRange.median)})` : ""} · range {f.pointRange.intervalMethod === "shortest" ? "shortest" : "equal-tailed"}
+                      {f.pointRange.adaptive ? ` · adaptive ${fmtPct(f.pointRange.coverage, 0)}` : ""}
+                    </p>
+                  ) : null}
                   {f.quantiles ? (
                     <p className="font-data text-[11px] tabular-nums text-muted-foreground">
                       p10 {fmtMult(f.quantiles.p10)} · p25 {fmtMult(f.quantiles.p25)} · p50 {fmtMult(f.quantiles.p50)} · p75 {fmtMult(f.quantiles.p75)} · p90 {fmtMult(f.quantiles.p90)} · p95 {fmtMult(f.quantiles.p95)}
