@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const src = path.resolve(here, "../../../archive/backend-ts-v6.5");
-const mods = ["analysis", "calibration", "intelligence", "robust-evaluation", "point-range", "analogue", "engine-gate", "pipeline", "momentum", "fx", "v64", "v65"];
+const mods = ["analysis", "calibration", "intelligence", "robust-evaluation", "point-range", "analogue", "engine-gate", "pipeline", "momentum", "fx", "v64", "v65", "docs"];
 await build({
   entryPoints: Object.fromEntries(mods.map((m) => [m, path.join(src, m + ".ts")])),
   bundle: true, format: "esm", platform: "node",
