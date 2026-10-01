@@ -121,7 +121,10 @@ def clamp(v: float, lo: float, hi: float) -> float:
 
 def _clean(o: Any) -> Any:
     if isinstance(o, float):
-        return o if math.isfinite(o) else None
+        if not math.isfinite(o):
+            return None
+        # JSON.stringify prints 4000, not 4000.0
+        return int(o) if o.is_integer() and abs(o) < 9007199254740992 else o
     if isinstance(o, dict):
         return {str(k): _clean(v) for k, v in o.items() if v is not _UNDEF}
     if isinstance(o, (list, tuple)):
