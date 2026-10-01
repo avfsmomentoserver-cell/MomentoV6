@@ -13,6 +13,16 @@ export interface RoundDto {
   color: string | null;
   source: string;
   session_id: number | null;
+  /** anchor trajectory information */
+  anchor?: {
+    isPeak: boolean;
+    left?: number;
+    right?: number;
+    size?: number;
+    phase?: "forming" | "released" | "idle";
+    potential?: number;
+    roundsSincePeak?: number;
+  };
 }
 
 export interface Overview {
@@ -641,13 +651,34 @@ export interface IntelligenceBlock {
     trendShift: number;
     dnaPatternTilt: number;
     linguisticsTilt: number;
+    tailLiftTrajectory: number;
+    momentumSpeed: number;
     finalScale: number;
+  };
+  /** blend mids for all engines including new intelligence engines */
+  blend: {
+    markovMid: number;
+    percentileMid: number;
+    dnaMid: number;
+    bandMid: number;
+    mlMid: number;
+    ensembleMid: number;
+    signalsMid: number;
+    baselineMid: number;
+    dnaPatternMid: number;
+    linguisticsMid: number;
+    shapeMid: number;
+    fxRegimeMid: number;
+    laddersMid: number;
+    resistanceMid: number;
   };
   /** collapse, ascend, and resistance forecast data */
   collapseAscendResistance?: {
     collapse: { active: boolean; run: number; strength: number; ceiling: number };
     ascend: { active: boolean; length: number; strength: number; slope: number; floor: number };
     resistance: { levels: Array<{ level: number; archetype: string; touches: number }>; dominant: { level: number; archetype: string; touches: number } | null };
+    anchorPhase: "forming" | "released" | "idle";
+    anchorPotential: number | null;
   };
 }
 

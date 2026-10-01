@@ -12,6 +12,23 @@ export interface Round {
   sessionId: number | null;
   /** observed | anchor (real top round, minute-precise time) | seeded (span seeder) | reconstructed (labelled gap fill) */
   origin?: string;
+  /** anchor trajectory information */
+  anchor?: {
+    /** whether this round is an anchor peak */
+    isPeak: boolean;
+    /** rounds from left trough to this peak (if peak) or to next peak (if in structure) */
+    left?: number;
+    /** rounds from this peak to right trough (if peak) or from previous peak (if in structure) */
+    right?: number;
+    /** total size of anchor structure (trough to trough) */
+    size?: number;
+    /** current phase: forming (rising), released (peak made), idle */
+    phase?: "forming" | "released" | "idle";
+    /** potential peak value if currently forming */
+    potential?: number;
+    /** rounds since last anchor peak was released */
+    roundsSincePeak?: number;
+  };
 }
 
 export const THRESHOLDS = [1.2, 1.5, 2, 3, 5, 10, 20, 50, 100, 250, 500, 1000] as const;
@@ -384,6 +401,100 @@ export function pressure(rounds: Round[]): Pressure {
   const overall = Math.round(rows.reduce((a, t) => a + t.pressurePct, 0) / Math.max(1, rows.length));
   const status: Pressure["status"] = overall >= 85 ? "critical" : overall >= 65 ? "loaded" : overall >= 40 ? "building" : "calm";
   return { powerLaw: { a: +fit.a.toFixed(4), b: +fit.b.toFixed(4), fitFrom: 25 }, targets: rows, overallPressure: overall, status };
+}
+
+// ---------------------------------------------------------------- anchor enrichment
+
+/**
+ * Enrich rounds with anchor trajectory information.
+ * This function adds anchor metadata to each round showing its position
+ * within anchor structures (trough-peak-trough patterns).
+ */
+export function enrichRoundsWithAnchors(rounds: Round[]): Round[] {
+  const m = rounds.map((r) => r.multiplier);
+  const n = m.length;
+  
+  // Find troughs (local minima)
+  const troughIdx: number[] = [];
+  for (let i = 1; i < n - 1; i++) {
+    if (m[i] < m[i - 1] && m[i] <= m[i + 1]) {
+      troughIdx.push(i);
+    }
+  }
+
+  // Find peaks (local maxima that form anchors)
+  const peaks: Array<{ idx: number; left: number; right: number; size: number }> = [];
+  for (let i = 1; i < n - 1; i++) {
+    if (!(m[i] > m[i - 1] && m[i] >= m[i + 1])) continue;
+    const left = troughIdx.filter((t) => t < i).pop();
+    const start = left ?? 0;
+    const right = troughIdx.find((t) => t > i);
+    const end = right ?? n - 1;
+    peaks.push({ idx: i, left: i - start, right: end - i, size: end - start });
+  }
+
+  // Determine current state
+  const lastPeak = peaks.length ? peaks[peaks.length - 1] : null;
+  const lastTrough = troughIdx.length ? troughIdx[troughIdx.length - 1] : -1;
+  let risingRun = 0;
+  let potential: number | null = null;
+  if (lastPeak && lastPeak.idx > lastTrough) {
+    risingRun = 0;
+    potential = null;
+  } else {
+    for (let i = n - 1; i > lastTrough; i--) {
+      if (i < n - 1 && m[i] > m[i + 1]) break;
+      risingRun = n - i;
+      potential = Math.max(potential ?? 0, m[i]);
+    }
+  }
+  const phase: "forming" | "released" | "idle" =
+    lastPeak && lastPeak.idx > lastTrough ? "released" : risingRun >= 2 ? "forming" : "idle";
+
+  // Enrich each round with anchor information
+  return rounds.map((r, i) => {
+    const isPeak = peaks.some((p) => p.idx === i);
+    const peakInfo = peaks.find((p) => p.idx === i);
+    
+    // Find which anchor structure this round belongs to
+    const anchorStructure = peaks.find((p) => {
+      const leftIdx = p.idx - p.left;
+      const rightIdx = p.idx + p.right;
+      return i >= leftIdx && i <= rightIdx;
+    });
+
+    let anchorData: Round["anchor"] | undefined;
+    if (isPeak && peakInfo) {
+      anchorData = {
+        isPeak: true,
+        left: peakInfo.left,
+        right: peakInfo.right,
+        size: peakInfo.size,
+        phase,
+        potential,
+        roundsSincePeak: lastPeak ? n - 1 - lastPeak.idx : null,
+      };
+    } else if (anchorStructure) {
+      anchorData = {
+        isPeak: false,
+        left: i - (anchorStructure.idx - anchorStructure.left),
+        right: (anchorStructure.idx + anchorStructure.right) - i,
+        size: anchorStructure.size,
+        phase,
+        potential,
+        roundsSincePeak: lastPeak ? n - 1 - lastPeak.idx : null,
+      };
+    } else {
+      anchorData = {
+        isPeak: false,
+        phase,
+        potential,
+        roundsSincePeak: lastPeak ? n - 1 - lastPeak.idx : null,
+      };
+    }
+
+    return { ...r, anchor: anchorData };
+  });
 }
 
 // ------------------------------------------------------------------- shape

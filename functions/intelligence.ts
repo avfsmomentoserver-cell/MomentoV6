@@ -719,6 +719,8 @@ export interface FullIntelligenceForecast {
       collapse: { active: boolean; run: number; strength: number; ceiling: number };
       ascend: { active: boolean; length: number; strength: number; slope: number; floor: number };
       resistance: { levels: Array<{ level: number; archetype: string; touches: number }>; dominant: { level: number; archetype: string; touches: number } | null };
+      anchorPhase: "forming" | "released" | "idle";
+      anchorPotential: number | null;
     };
   };
   /** locked-holdout evidence / provenance, attached by the live core (robust-evaluation.ts) */
@@ -792,10 +794,12 @@ export function earnWeights(ledger: IntelWeights | null | undefined): Record<Com
 
 export function fullIntelligenceForecast(allRounds: Round[], source: string, opts: IntelOptions = {}): FullIntelligenceForecast {
   const rounds = allRounds.slice(-(opts.maxHistory ?? 20_000));
-  const m = rounds.map((r) => r.multiplier);
+  // Enrich rounds with anchor trajectory information
+  const enrichedRounds = enrichRoundsWithAnchors(rounds);
+  const m = enrichedRounds.map((r) => r.multiplier);
   const n = m.length;
   const last = m[n - 1] ?? 1;
-  const cadenceMs = medianIntervalMs(rounds);
+  const cadenceMs = medianIntervalMs(enrichedRounds);
   const pw = opts.pipelineWeights ?? {};
 
   // ---------- measured references
@@ -809,6 +813,11 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
   const percentileDist = bandShares(recent, baseline, 20);
   const surv = (t: number) => (n ? m.filter((x) => x >= t).length / n : 0);
   const emp = { over2: surv(2), over5: surv(5), over10: surv(10) };
+
+  // Anchor trajectory enrichment
+  const currentAnchor = enrichedRounds[n - 1]?.anchor;
+  const anchorPhase = currentAnchor?.phase ?? "idle";
+  const anchorPotential = currentAnchor?.potential ?? null;
 
   // per-band within-band sorted samples (interpolated quantiles)
   const inBand: number[][] = Array.from({ length: NB }, () => []);
@@ -849,30 +858,30 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
   const exhaustion = bandExhaustion(m.slice(-5000));
   const ladders = ladderIntel(m.slice(-1500));
   const ml = mlIntel(m, emp);
-  const press = pressureOf(rounds);
-  const ms = moonshotOf(rounds);
-  const sh = shape(rounds, 80);
-  const st = streaksOf(rounds, 2);
-  const bandTest = bandsOf(rounds.slice(-5000));
-  const v6band = nextRoundForecast(rounds, source, pw);
-  const per2 = perRoundProbability(rounds, 2, pw);
-  const per5 = perRoundProbability(rounds, 5, pw);
-  const per10 = perRoundProbability(rounds, 10, pw);
+  const press = pressureOf(enrichedRounds);
+  const ms = moonshotOf(enrichedRounds);
+  const sh = shape(enrichedRounds, 80);
+  const st = streaksOf(enrichedRounds, 2);
+  const bandTest = bandsOf(enrichedRounds.slice(-5000));
+  const v6band = nextRoundForecast(enrichedRounds, source, pw);
+  const per2 = perRoundProbability(enrichedRounds, 2, pw);
+  const per5 = perRoundProbability(enrichedRounds, 5, pw);
+  const per10 = perRoundProbability(enrichedRounds, 10, pw);
   let trend: ReturnType<typeof trendQuality> | null = null;
   let rev: ReturnType<typeof meanReversion> | null = null;
   let vol: ReturnType<typeof volatilityProfile> | null = null;
   let brk: ReturnType<typeof breakout> | null = null;
   if (n >= 200) {
-    trend = trendQuality(rounds);
-    rev = meanReversion(rounds);
-    vol = volatilityProfile(rounds);
-    brk = breakout(rounds);
+    trend = trendQuality(enrichedRounds);
+    rev = meanReversion(enrichedRounds);
+    vol = volatilityProfile(enrichedRounds);
+    brk = breakout(enrichedRounds);
   }
-  const momentum = rangeMomentum(rounds.slice(-5000));
-  const research = n >= 300 ? moonshotResearch(rounds.slice(-8000), 10) : null;
+  const momentum = rangeMomentum(enrichedRounds.slice(-5000));
+  const research = n >= 300 ? moonshotResearch(enrichedRounds.slice(-8000), 10) : null;
 
   // ---------- collapse, ascend, and resistance forecast
-  const ceilings = ceilingsOf(rounds);
+  const ceilings = ceilingsOf(enrichedRounds);
   const collapseAscendResistance = {
     collapse: sig.col,
     ascend: sig.asc,
@@ -880,6 +889,8 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
       levels: ceilings.levels.map((c) => ({ level: c.level, archetype: c.archetype, touches: c.touches })),
       dominant: ceilings.dominant ? { level: ceilings.dominant.level, archetype: ceilings.dominant.archetype, touches: ceilings.dominant.touches } : null,
     },
+    anchorPhase,
+    anchorPotential,
   };
 
   // V5 gap/swing momentum + regime
@@ -1153,12 +1164,16 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
     breakoutScale: number;
     trendShift: number;
     dnaPatternTilt: number;
+    tailLiftTrajectory: number;
+    momentumSpeed: number;
     finalScale: number;
   } = {
     regimeScale: 1,
     breakoutScale: 1,
     trendShift: 0,
     dnaPatternTilt: 0,
+    tailLiftTrajectory: 0,
+    momentumSpeed: 0,
     finalScale: 1,
   };
 
@@ -1204,6 +1219,29 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
     rangeAdjustments.dnaPatternTilt = -0.1;
   }
 
+  // Tail lift trajectory adjustment
+  // Use tailLift from v6band to trajectoryze expected and ranges
+  // Higher tailLift means the distribution is heavy-tailed, so adjust upward
+  const tailLiftValue = v6band.tailLift ?? 0;
+  const tailLiftAdjustment = clamp(tailLiftValue * 0.3, -0.15, 0.25);
+  if (tailLiftAdjustment !== 0) {
+    rangeScale *= (1 + tailLiftAdjustment);
+    rangeAdjustments.tailLiftTrajectory = tailLiftAdjustment;
+  }
+
+  // Momentum speed calculation
+  // Calculate speed of ascending gaps between rounds using momentum data
+  // Focus on the 10x+ range for high-momentum signal
+  const momentum10x = momentum.find((m) => m.min === 10);
+  let momentumSpeed = 0;
+  if (momentum10x && momentum10x.momentum !== null) {
+    // momentum > 1 means accelerating (shorter recent gaps), so increase expected
+    // momentum < 1 means cooling (longer recent gaps), so decrease expected
+    const speedFactor = (momentum10x.momentum - 1) * 0.15; // Scale the effect
+    momentumSpeed = clamp(speedFactor, -0.2, 0.3);
+    rangeAdjustments.momentumSpeed = momentumSpeed;
+  }
+
   // Clamp final range scale
   rangeScale = clamp(rangeScale, 0.5, 2.0);
   rangeAdjustments.finalScale = rangeScale;
@@ -1211,6 +1249,15 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
   // Apply trend shift
   rangeLo = rangeLo * (1 - trendShift);
   rangeHi = rangeHi * (1 + trendShift);
+
+  // Apply momentum speed to expected value and range
+  // Positive momentum speed (accelerating) lifts both expected and range
+  // Negative momentum speed (cooling) lowers expected and tightens range
+  if (momentumSpeed !== 0) {
+    expected = expected * (1 + momentumSpeed);
+    rangeLo = rangeLo * (1 + momentumSpeed * 0.5); // Adjust range less aggressively
+    rangeHi = rangeHi * (1 + momentumSpeed);
+  }
 
   // Apply range scale
   rangeLo = Math.max(1, rangeLo * rangeScale);
@@ -1396,7 +1443,6 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
       laddersMid: mid("ladders"),
       resistanceMid: mid("resistance"),
     },
-    rangeAdjustments,
     intelligence: {
       components: compOut,
       agreement: r4(agreement),
