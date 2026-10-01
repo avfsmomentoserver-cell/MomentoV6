@@ -673,6 +673,10 @@ export interface IntelOptions {
   engineStates?: Record<string, string>;
   /** v6.5 registered custom engines (F-12) — join the mixture as experts */
   extraEngines?: { key: string; label: string; prior: number; predict: (rounds: Round[]) => number[] }[];
+  /** ETA median from survival analysis (adjusts expected) */
+  etaMedian?: number;
+  /** cone spread factor from multi-window predictions (adjusts range) */
+  coneSpread?: number;
 }
 
 const PRIOR: Record<ComponentKey, number> = {
@@ -955,11 +959,29 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
   const corr = opts.correction ?? 0;
   const factor = corr ? clamp(Math.exp(corr), 0.5, 2) : 1;
   const expectedRaw = quantileOf(mixture, 0.5);
-  const expected = Math.max(1, expectedRaw * factor);
-  const rangeLo = Math.max(1, quantileOf(mixture, 0.25) * (0.6 + 0.4 * factor));
-  const rangeHi = Math.max(rangeLo + 0.01, quantileOf(mixture, 0.75) * (0.8 + 0.2 * factor));
+  let expected = Math.max(1, expectedRaw * factor);
+  let rangeLo = Math.max(1, quantileOf(mixture, 0.25) * (0.6 + 0.4 * factor));
+  let rangeHi = Math.max(rangeLo + 0.01, quantileOf(mixture, 0.75) * (0.8 + 0.2 * factor));
   const reach = quantileOf(mixture, 0.9);
   const tailShare = mixture[4] + mixture[5];
+
+  // Adjust expected based on ETA median (if provided)
+  // ETA median represents median rounds to hit threshold, convert to multiplier adjustment
+  if (opts.etaMedian !== undefined && opts.etaMedian > 0) {
+    // If ETA is very short (< 3 rounds), increase expected (edge case)
+    // If ETA is very long (> 15 rounds), decrease expected (regression to mean)
+    const etaAdjust = opts.etaMedian < 3 ? 1.05 : opts.etaMedian > 15 ? 0.95 : 1.0;
+    expected = expected * etaAdjust;
+  }
+
+  // Adjust range based on cone spread (if provided)
+  // Cone spread represents forecast uncertainty across multiple horizons
+  if (opts.coneSpread !== undefined && opts.coneSpread > 0) {
+    // Higher cone spread means more uncertainty, widen the range
+    const spreadFactor = clamp(1 + (opts.coneSpread - 1) * 0.3, 0.8, 1.5);
+    rangeLo = Math.max(1, rangeLo / spreadFactor);
+    rangeHi = rangeHi * spreadFactor;
+  }
 
   // ---------- V5 confidence (state conviction) + calibrated confidence
   const scoreVals = STATES.map((s) => cls.scores[s]).sort((a, b) => b - a);

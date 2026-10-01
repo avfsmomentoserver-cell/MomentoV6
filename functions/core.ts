@@ -68,7 +68,7 @@ import {
 } from "./intelligence";
 import { deepTick, initV64Schema, routeV64, type CoreAdapter } from "./v64routes";
 import { initV65Schema, onIngest, registry, routeV65, type V65User } from "./v65routes";
-import { sha256Sync } from "./v65";
+import { sha256Sync, quantileFromDist } from "./v65";
 
 export const VERSION = "6.5.0";
 
@@ -1228,14 +1228,58 @@ export class MomentoCore extends DurableObject {
   private intelForecast(rounds: Round[], source: string): FullIntelligenceForecast {
     const corr = this.intelCorrection();
     const reg = registry(this.ctx.storage.sql as never);
-    return fullIntelligenceForecast(rounds, source, {
+
+    // Calculate ETA median from survival analysis (for 10× threshold)
+    let etaMedian: number | undefined;
+    try {
+      const { etaBoard } = require("./v65");
+      const eta = etaBoard(rounds, { thresholds: [10] });
+      const row10 = eta.rows.find((r: { threshold: number }) => r.threshold === 10);
+      etaMedian = row10?.etaMedian ?? undefined;
+    } catch {
+      // Fallback: no ETA adjustment if calculation fails
+    }
+
+    // Calculate cone spread from the forecast distribution (will be computed after initial forecast)
+    // We'll use a default of 1.0 (no adjustment) and let the intelligence function calculate it
+    const coneSpread = 1.0;
+
+    const forecast = fullIntelligenceForecast(rounds, source, {
       engineStates: reg.states,
       extraEngines: reg.extras,
       ledger: this.intelLedger(),
       pipelineWeights: this.weightsMap(),
       correction: corr.value || undefined,
       correctionSample: corr.sampleSize,
+      etaMedian,
+      coneSpread,
     });
+
+    // Calculate actual cone spread from the forecast distribution
+    const dist = forecast.intelligence?.distribution ?? [];
+    if (dist.length >= 5) {
+      const p25 = quantileFromDist(dist, 0.25);
+      const p50 = quantileFromDist(dist, 0.5);
+      const p90 = quantileFromDist(dist, 0.9);
+      // Normalized spread: (p90 - p25) / p50, clipped to reasonable range
+      const spread = p50 > 0 ? (p90 - p25) / p50 : 1.0;
+      const clampedSpread = Math.max(0.8, Math.min(2.0, spread));
+      // Re-forecast with the actual cone spread if it differs significantly
+      if (Math.abs(clampedSpread - 1.0) > 0.1) {
+        return fullIntelligenceForecast(rounds, source, {
+          engineStates: reg.states,
+          extraEngines: reg.extras,
+          ledger: this.intelLedger(),
+          pipelineWeights: this.weightsMap(),
+          correction: corr.value || undefined,
+          correctionSample: corr.sampleSize,
+          etaMedian,
+          coneSpread: clampedSpread,
+        });
+      }
+    }
+
+    return forecast;
   }
 
   private calibrateIntel(all: Round[]): number {
