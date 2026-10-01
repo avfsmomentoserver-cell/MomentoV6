@@ -527,6 +527,25 @@ export interface IntelExhaustionBand {
   status: "overdue" | "due" | "fresh";
 }
 
+export interface IntelCalibrationInfo {
+  distributionActive: boolean;
+  quantileActive: boolean;
+  gamma: number;
+  tau: number;
+  levels: { rangeLo: number; expected: number; rangeHi: number; reach: number };
+  sample: number;
+  validSample: number;
+  validRawLogLoss: number | null;
+  validCalLogLoss: number | null;
+  improvementPct: number | null;
+  coverageRaw: number | null;
+  coverageCal: number | null;
+  crash: { raw: number; calibrated: number; observed: number };
+  legacyCorrection: boolean;
+  modeBand: string;
+  reason: string;
+}
+
 export interface IntelligenceBlock {
   components: IntelComponent[];
   agreement: number;
@@ -562,6 +581,8 @@ export interface IntelligenceBlock {
   regime: { label: string; volatility: number; drift: number };
   independence: { chiSquare: number; independent: boolean };
   honesty: string;
+  /** predictor: how the headline was derived from the out-of-sample calibrated distribution */
+  calibration?: IntelCalibrationInfo;
 }
 
 export interface IntelCalibrationRow {

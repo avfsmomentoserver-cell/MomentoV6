@@ -49,6 +49,7 @@ import {
   windowProbability,
   type WindowDef,
 } from "./pipeline";
+import { fitRecalibrator, reliabilityTable, sanitizeDist, survivalAt, type CalSample, type Recalibrator } from "./calibration";
 import {
   anchors,
   assessLive,
@@ -73,6 +74,7 @@ import { sha256Sync } from "./v65";
 export const VERSION = "6.5.0";
 
 type Rows = Record<string, unknown>;
+const clamp01 = (p: number) => (Number.isFinite(p) ? Math.min(1 - 1e-6, Math.max(1e-6, p)) : 0.5);
 
 const json = (data: unknown, status = 200): Response =>
   new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
@@ -366,6 +368,13 @@ export class MomentoCore extends DurableObject {
       );
       CREATE INDEX IF NOT EXISTS idx_intel_cal ON intel_calibrations (created_ms);
     `);
+    // predictor: log-loss of the *published* (recalibrated) distribution, next to
+    // mix_loss (raw mixture). Idempotent migration for existing databases.
+    try {
+      this.ctx.storage.sql.exec("ALTER TABLE intel_calibrations ADD COLUMN cal_loss REAL");
+    } catch {
+      /* column already exists */
+    }
   }
 
   private initV64(): void {
@@ -562,6 +571,7 @@ export class MomentoCore extends DurableObject {
   private invalidateCaches(): void {
     this.roundsCache.clear();
     this.analysisCache.clear();
+    this.intelForecastCache.clear();
   }
 
   /**
@@ -971,8 +981,10 @@ export class MomentoCore extends DurableObject {
           "UPDATE scheduled_predictions SET resolved_ms = ?, actual = ?, outcome_rounds = ?, brier = ?, logloss = ? WHERE id = ?",
           now, actual, outcomeRow.n, +brier.toFixed(6), +logloss.toFixed(6), f.id as number,
         );
-        this.upsertLedger("pipeline", f.window as string, f.threshold as number, { n: 1, brierSum: brier, baseSum: baseBrier, loglossSum: logloss, hits: (p >= 0.5) === (actual === 1) ? 1 : 0, roundsScanned: 0 });
-        this.appendAccuracyHistory(f.window as string, f.threshold as number);
+        const model = (f.model as string) || "pipeline";
+        this.upsertLedger(model, f.window as string, f.threshold as number, { n: 1, brierSum: brier, baseSum: baseBrier, loglossSum: logloss, hits: (p >= 0.5) === (actual === 1) ? 1 : 0, roundsScanned: 0 });
+        // the rolling chart tracks the champion (pipeline) series only
+        if (model === "pipeline") this.appendAccuracyHistory(f.window as string, f.threshold as number);
         summary.resolved = (summary.resolved as number) + 1;
       }
 
@@ -982,21 +994,51 @@ export class MomentoCore extends DurableObject {
         summary.weights = true;
       }
 
-      // 3. schedule one open prediction per (window, threshold) — stored before landing
-      const weights = this.weightsMap();
-      for (const w of cfg.windows) {
+      // 3. schedule one open prediction per (model, window, threshold) — stored before landing.
+      // The v6 pipeline stays the champion (history/overview continuity); the
+      // full-intelligence forecast runs as a scored challenger on the same windows.
+      // Components are stored as WINDOW probabilities so the baseline Brier used
+      // for skill compares like with like.
+      let intel: FullIntelligenceForecast | null = null;
+      try {
+        intel = roundsAll.length >= 50 ? this.intelForecast(roundsAll, "all") : null;
+      } catch (e) {
+        console.error("[momento-v6] full-intelligence forecast failed in accuracy tick", e);
+      }
+      const intelDist = intel ? sanitizeDist(intel.distribution.map((d) => d.probability)) : null;
+      const pipeWeights = this.weightsMap();
+      const isOpen = (model: string, window: string, t: number) =>
+        sql.exec("SELECT id FROM scheduled_predictions WHERE model = ? AND window = ? AND threshold = ? AND resolved_ms IS NULL LIMIT 1", model, window, t).toArray().length > 0;
+      const insert = (model: string, window: string, t: number, perRound: number, nR: number, components: { model: string; p: number }[], due: number) => {
+        const p = clamp01(perRound);
+        const pWin = windowProbability(p, nR);
+        if (!Number.isFinite(pWin)) return false;
+        sql.exec(
+          `INSERT INTO scheduled_predictions (source, window, threshold, model, probability, per_round, expected_rounds, components, created_ms, due_ms)
+           VALUES ('all', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          window, t, model, +pWin.toFixed(6), +p.toFixed(6), nR, JSON.stringify(components), now, due,
+        );
+        return true;
+      };
+      // no history → no forecast: never store placeholder probabilities that would
+      // later be scored as if they were real predictions
+      const scheduleWindows = roundsAll.length >= 50 ? cfg.windows : [];
+      for (const w of scheduleWindows) {
         const nR = expectedRounds(roundsAll, w.ms);
         for (const t of cfg.thresholds) {
-          const open = sql.exec("SELECT id FROM scheduled_predictions WHERE window = ? AND threshold = ? AND resolved_ms IS NULL LIMIT 1", w.id, t).toArray();
-          if (open.length) continue;
-          const per = perRoundProbability(roundsAll, t, weights);
-          const pWin = windowProbability(per.p, nR);
-          sql.exec(
-            `INSERT INTO scheduled_predictions (source, window, threshold, model, probability, per_round, expected_rounds, components, created_ms, due_ms)
-             VALUES ('all', ?, ?, 'pipeline', ?, ?, ?, ?, ?, ?)`,
-            w.id, t, +pWin.toFixed(6), per.p, nR, JSON.stringify(per.components), now, now + w.ms,
-          );
-          summary.scheduled = (summary.scheduled as number) + 1;
+          const per = perRoundProbability(roundsAll, t, pipeWeights);
+          const baselineWin = { model: "baseline", p: +windowProbability(per.baseRate, nR).toFixed(6) };
+          if (!isOpen("pipeline", w.id, t)) {
+            const comps = per.components.map((c) => ({ model: c.model, p: +windowProbability(c.p, nR).toFixed(6) }));
+            if (insert("pipeline", w.id, t, per.p, nR, comps, now + w.ms)) summary.scheduled = (summary.scheduled as number) + 1;
+          }
+          if (intel && intelDist && !isOpen("full-intelligence", w.id, t)) {
+            const comps = [
+              baselineWin,
+              ...intel.intelligence.components.map((c) => ({ model: c.key, p: +windowProbability(survivalAt(sanitizeDist(c.distribution) ?? intelDist, t), nR).toFixed(6) })).filter((c) => c.model !== "baseline"),
+            ];
+            if (insert("full-intelligence", w.id, t, survivalAt(intelDist, t), nR, comps, now + w.ms)) summary.scheduled = (summary.scheduled as number) + 1;
+          }
         }
       }
 
@@ -1162,7 +1204,7 @@ export class MomentoCore extends DurableObject {
     const key = `${stamp.n}:${stamp.id}:${window}:${asOf ?? "live"}`;
     if (this.intelLedgerCache?.key === key) return this.intelLedgerCache.value;
     const rows = sql
-      .exec("SELECT comp_loss, mix_loss, base_loss, verdict FROM intel_calibrations WHERE resolved_ms IS NOT NULL AND created_ms < ? ORDER BY created_ms DESC LIMIT ?", asOf ?? 9e15, window)
+      .exec("SELECT comp_loss, COALESCE(cal_loss, mix_loss) AS mix_loss, base_loss, verdict FROM intel_calibrations WHERE resolved_ms IS NOT NULL AND created_ms < ? ORDER BY created_ms DESC LIMIT ?", asOf ?? 9e15, window)
       .toArray() as Rows[];
     const sums: Record<string, number> = {};
     let mix = 0, base = 0, hits = 0;
@@ -1204,18 +1246,89 @@ export class MomentoCore extends DurableObject {
     return { value: Math.max(-1.5, Math.min(1.5, mid)), sampleSize: total };
   }
 
-  /** Build the live full-intelligence forecast with the current ledger + rectification. */
+  private recalibratorCache: { key: string; value: Recalibrator } | null = null;
+
+  /** Resolved (raw distribution, actual) pairs from the intel ledger, oldest first. */
+  private intelCalSamples(window = 1000): CalSample[] {
+    const rows = this.ctx.storage.sql
+      .exec(
+        "SELECT dist, actual FROM intel_calibrations WHERE resolved_ms IS NOT NULL AND actual IS NOT NULL AND dist IS NOT NULL AND created_ms < ? ORDER BY created_ms DESC LIMIT ?",
+        this.asOfMs ?? 9e15,
+        window,
+      )
+      .toArray() as Rows[];
+    const out: CalSample[] = [];
+    for (let i = rows.length - 1; i >= 0; i--) {
+      try {
+        const dist = JSON.parse(rows[i].dist as string) as number[];
+        if (Array.isArray(dist)) out.push({ dist, actual: rows[i].actual as number });
+      } catch {
+        /* skip corrupt row */
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Out-of-sample recalibrator for the full-intelligence distribution. Refitted
+   * whenever the ledger changes; each layer only activates after beating the raw
+   * mixture on held-out rounds (calibration.ts). Operators can disable it with
+   * setting intel_recalibration = 0.
+   */
+  private intelRecalibrator(): Recalibrator {
+    const sql = this.ctx.storage.sql;
+    const stamp = sql.exec("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS id FROM intel_calibrations").toArray()[0] as { n: number; id: number };
+    const enabled = this.setting("intel_recalibration") !== "0";
+    const window = clampInt(this.setting("intel_recalibration_window") ?? "1000", 100, 3000, 1000);
+    // refit every 10 new ledger rows (the fit only ever sees rows that already
+    // resolved, so reusing it for a few rounds cannot leak future information)
+    const key = `${Math.floor(stamp.n / 10)}:${this.asOfMs ?? "live"}:${enabled}:${window}`;
+    if (this.recalibratorCache?.key === key) return this.recalibratorCache.value;
+    let value: Recalibrator;
+    try {
+      value = enabled
+        ? fitRecalibrator(this.intelCalSamples(window))
+        : fitRecalibrator([], { minSample: Number.POSITIVE_INFINITY });
+      if (!enabled) value = { ...value, reason: "Recalibration disabled by operator (setting intel_recalibration = 0)." };
+    } catch (e) {
+      console.error("[momento-v6] recalibrator fit failed", e);
+      value = fitRecalibrator([], { minSample: Number.POSITIVE_INFINITY });
+      value = { ...value, reason: "Recalibration fit failed — raw mixture published." };
+    }
+    this.recalibratorCache = { key, value };
+    return value;
+  }
+
+  private intelForecastCache = new Map<string, FullIntelligenceForecast>();
+
+  /**
+   * Build the live full-intelligence forecast with the current ledger,
+   * recalibrator and rectification. Memoised on (source, tape head, ledger,
+   * registry, as_of) because ETA board, cone, Ask Momento, the scheduler and the
+   * forecast endpoints all ask for the same object within one tape state.
+   */
   private intelForecast(rounds: Round[], source: string): FullIntelligenceForecast {
+    const sql = this.ctx.storage.sql;
+    const reg = registry(sql as never);
+    const head = rounds[rounds.length - 1];
+    const stamp = sql.exec("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS id FROM intel_calibrations").toArray()[0] as { n: number; id: number };
+    const regKey = JSON.stringify(reg.states) + "|" + reg.extras.map((e) => e.key).join(",");
+    const key = [source, rounds.length, head?.id ?? 0, head?.tsMs ?? 0, head?.multiplier ?? 0, stamp.n, stamp.id, this.asOfMs ?? "live", regKey, this.setting("intel_recalibration") ?? "1"].join(":");
+    const hit = this.intelForecastCache.get(key);
+    if (hit) return hit;
     const corr = this.intelCorrection();
-    const reg = registry(this.ctx.storage.sql as never);
-    return fullIntelligenceForecast(rounds, source, {
+    const value = fullIntelligenceForecast(rounds, source, {
       engineStates: reg.states,
       extraEngines: reg.extras,
       ledger: this.intelLedger(),
       pipelineWeights: this.weightsMap(),
       correction: corr.value || undefined,
       correctionSample: corr.sampleSize,
+      recalibrator: this.intelRecalibrator(),
     });
+    if (this.intelForecastCache.size >= 8) this.intelForecastCache.delete(this.intelForecastCache.keys().next().value as string);
+    this.intelForecastCache.set(key, value);
+    return value;
   }
 
   private calibrateIntel(all: Round[]): number {
@@ -1248,20 +1361,24 @@ export class MomentoCore extends DurableObject {
         pipelineWeights: weights,
         correction: corr.value || undefined,
         correctionSample: corr.sampleSize,
+        // walk-forward: fitted only on rows created before this round
+        recalibrator: this.intelRecalibrator(),
       });
       // score the raw (uncorrected) point estimate so rectification measures drift, not itself
       const rawF = { ...f, expectedMultiplier: f.baseMultiplier };
       const s = scoreIntelForecast(rawF, target.multiplier);
       const compLoss: Record<string, number> = {};
       for (const c of f.intelligence.components) compLoss[c.key] = +bandLogLoss(c.distribution, target.multiplier).toFixed(5);
-      const mixLoss = bandLogLoss(f.distribution.map((d) => d.probability), target.multiplier);
+      // dist = RAW mixture (what the recalibrator is fitted on — never its own output)
+      const mixLoss = bandLogLoss(f.rawDistribution, target.multiplier);
+      const calLoss = bandLogLoss(f.distribution.map((d) => d.probability), target.multiplier);
       sql.exec(
-        `INSERT INTO intel_calibrations (source, round_id, state, expected, range_lo, range_hi, reach, confidence, correction, dist, weights, comp_loss, mix_loss, base_loss, actual, verdict, reason, band_err, log_err, created_ms, resolved_ms)
-         VALUES ('all', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO intel_calibrations (source, round_id, state, expected, range_lo, range_hi, reach, confidence, correction, dist, weights, comp_loss, mix_loss, cal_loss, base_loss, actual, verdict, reason, band_err, log_err, created_ms, resolved_ms)
+         VALUES ('all', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         target.id, f.state, f.expectedMultiplier, f.rangeLo, f.rangeHi, f.moonshotReach, f.confidence, corr.value,
-        JSON.stringify(f.distribution.map((d) => d.probability)),
+        JSON.stringify(f.rawDistribution),
         JSON.stringify(Object.fromEntries(f.intelligence.components.map((c) => [c.key, c.weight]))),
-        JSON.stringify(compLoss), +mixLoss.toFixed(5), compLoss.baseline ?? null,
+        JSON.stringify(compLoss), +mixLoss.toFixed(5), +calLoss.toFixed(5), compLoss.baseline ?? null,
         target.multiplier, s.verdict, s.reason, s.bandErr, +s.logErr.toFixed(5), target.tsMs, target.tsMs,
       );
       scored++;
@@ -1940,6 +2057,13 @@ export class MomentoCore extends DurableObject {
         liveThresholds: [2, 5, 10, 50, 100],
       });
     }
+    if (path === "/api/v1/research/recalibration" && method === "GET") {
+      // Held-out diagnostics of the distribution / quantile recalibration plus a
+      // reliability table (predicted vs observed band frequency, raw vs calibrated).
+      const rc = this.intelRecalibrator();
+      const samples = this.intelCalSamples(clampInt(this.setting("intel_recalibration_window") ?? "1000", 100, 3000, 1000));
+      return ok({ recalibrator: rc, reliability: reliabilityTable(samples, rc), bands: BAND_LABELS, sample: samples.length });
+    }
     if (path === "/api/v1/calibration" && method === "GET") {
       const rounds = this.roundsFor(null);
       const n = rounds.length;
@@ -2171,6 +2295,8 @@ export class MomentoCore extends DurableObject {
       this.requireOperator(request);
       sql.exec("DELETE FROM intel_calibrations");
       this.intelLedgerCache = null;
+      this.recalibratorCache = null;
+      this.intelForecastCache.clear();
       const scored = this.calibrateIntel(this.roundsFor(null));
       return ok({ scored });
     }
@@ -2233,6 +2359,21 @@ export class MomentoCore extends DurableObject {
         "SELECT SUM(n) AS n, SUM(brier_sum) AS b, SUM(base_sum) AS s, SUM(hits) AS h FROM accuracy_ledger WHERE model = 'pipeline'",
       ).toArray()[0] as Rows;
       const ledger = sql.exec("SELECT * FROM accuracy_ledger ORDER BY model, window, threshold").toArray() as Rows[];
+      // champion vs challenger: Brier skill vs window baseline per scheduled model
+      const byModel = (sql.exec(
+        "SELECT model, SUM(n) AS n, SUM(brier_sum) AS b, SUM(base_sum) AS s, SUM(logloss_sum) AS l, SUM(hits) AS h FROM accuracy_ledger WHERE model IN ('pipeline', 'full-intelligence') GROUP BY model",
+      ).toArray() as Rows[]).map((r) => {
+        const mn = (r.n as number) || 0;
+        return {
+          model: r.model,
+          n: mn,
+          brier: mn ? +((r.b as number) / mn).toFixed(5) : null,
+          base: mn ? +((r.s as number) / mn).toFixed(5) : null,
+          logloss: mn ? +((r.l as number) / mn).toFixed(5) : null,
+          hitRate: mn ? +((r.h as number) / mn).toFixed(4) : null,
+          skillPct: mn && (r.s as number) > 0 ? +((((r.s as number) - (r.b as number)) / (r.s as number)) * 100).toFixed(2) : null,
+        };
+      });
       const weights = sql.exec("SELECT * FROM engine_weights ORDER BY weight DESC, model").toArray();
       const perWindow = sql
         .exec("SELECT window, threshold, SUM(n) AS n, SUM(brier_sum) AS b, SUM(base_sum) AS s, SUM(hits) AS h FROM accuracy_ledger WHERE model = 'pipeline' GROUP BY window, threshold")
@@ -2245,6 +2386,7 @@ export class MomentoCore extends DurableObject {
       const base = n ? (accRow.s as number) / n : null;
       return ok({
         config: cfg,
+        byModel,
         cadenceMs: this.cadenceMs(),
         lastTickMs: Number(this.setting("accuracy_last_tick") ?? 0),
         totals: {

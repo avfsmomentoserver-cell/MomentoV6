@@ -4,7 +4,7 @@ import { Loading, PageHeader, Panel } from "@/components/bits";
 import { DataTable, MiniLines, Note, Verdict, ci, inputCls, pct, useV1 } from "@/components/v65/kit";
 
 type Row = { threshold: number; events: number; currentGap: number; rate: number; kmPercentile: number; pressure: number; hazardNow: number; pNext: number; pWithin10: number; etaMedian: number; etaP90: number; etaMedianAt: string; etaP90At: string; medianGap: number; memoryless: { beta1: number; lo: number; hi: number; verdict: string }; hazardModel: { beatsKM: boolean; adjustedEtaMedian: number | null }; calibration: { n: number; beforeMedian: number; target: number }; note: string };
-type Board = { cadenceMs: number; generatedAt: string; lastTs: string; rows: Row[] };
+type Board = { cadenceMs: number; generatedAt: string; lastTs: string; rows: Row[]; intelligence?: Record<string, unknown> };
 type Haz = { threshold: number; rate: number; currentGap: number; series: { g: number; hazard: number; lo: number; hi: number; atRisk: number }[] };
 type InRound = { m0: number; sample: number; rows: { target: number; law: number; empirical: number; lo: number; hi: number; secondsFromStart: number; secondsFromNow: number }[]; note: string };
 
@@ -31,7 +31,19 @@ export default function EtaBoard() {
             { key: "memoryless", label: "memoryless β₁", render: (r) => { const m = r.memoryless as Row["memoryless"]; return <span title={m.verdict}>{m.beta1} {ci(m.lo, m.hi, 3)} <Verdict ok={m.lo <= 0 && m.hi >= 0}>{m.lo <= 0 && m.hi >= 0 ? "memoryless" : "due-effect?"}</Verdict></span>; } },
           ]} />
         )}
-        {b.data && <p className="mt-2 text-[11.5px] text-muted-foreground">Cadence {(b.data.cadenceMs / 1000).toFixed(1)} s · last round {new Date(b.data.lastTs).toLocaleString()}</p>}
+        {b.data && (
+          <>
+            <p className="mt-2 text-[11.5px] text-muted-foreground">Cadence {(b.data.cadenceMs / 1000).toFixed(1)} s · last round {new Date(b.data.lastTs).toLocaleString()}</p>
+            {b.data.intelligence && (
+              <p className="mt-1 text-[11.5px] text-muted-foreground">
+                Intelligence state: <span className="font-medium text-foreground">{String((b.data.intelligence as Record<string, unknown>).state ?? "N/A")}</span>
+                {(b.data.intelligence as Record<string, unknown>).confidence && (
+                  <span> · confidence {pct((b.data.intelligence as Record<string, unknown>).confidence as number)}</span>
+                )}
+              </p>
+            )}
+          </>
+        )}
       </Panel>
       <div className="grid gap-4 lg:grid-cols-2">
         <Panel title={`Hazard timeline · P(≥ ${T}× at gap g)`} right={<select className={inputCls} value={T} onChange={(e) => setT(Number(e.target.value))}>{[2, 5, 10, 20, 50, 100].map((t) => <option key={t} value={t}>{t}×</option>)}</select>}>

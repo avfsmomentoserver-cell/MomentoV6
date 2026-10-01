@@ -12,6 +12,23 @@ import initSqlJs from "sql.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// Load functions/.env (ENTRIM_API_KEY, …) without a dependency. Real environment
+// variables win over the file; a missing or malformed file is not fatal.
+const envFile = resolve(__dirname, ".env");
+if (existsSync(envFile)) {
+  try {
+    for (const line of readFileSync(envFile, "utf8").split(/\r?\n/)) {
+      const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+      if (!m || line.trim().startsWith("#")) continue;
+      const value = m[2].replace(/^(['"])(.*)\1$/, "$2");
+      if (process.env[m[1]] === undefined) process.env[m[1]] = value;
+    }
+    console.log("[momento-v6] loaded functions/.env");
+  } catch (e) {
+    console.warn("[momento-v6] could not read functions/.env:", e instanceof Error ? e.message : e);
+  }
+}
+
 // Parse args
 const args = process.argv.slice(2);
 let port = 8000;

@@ -94,9 +94,9 @@ export function TopBar({ onOpenSidebar, onOpenPalette }: { onOpenSidebar: () => 
           {clock.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
         </span>
 
-        <Link to="/dashboard/downloads" className="hidden sm:block">
+        <div className="hidden sm:block">
           <DownloadSourceButton compact />
-        </Link>
+        </div>
 
         {user ? (
           <div className="relative">

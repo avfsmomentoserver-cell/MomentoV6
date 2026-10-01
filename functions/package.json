@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "node local-dev.mjs",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test": "node test/build-predictor.mjs && node --test test/*.test.mjs",
+    "predictor:backtest": "node test/build-predictor.mjs && node test/predictor-backtest.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.28.2",

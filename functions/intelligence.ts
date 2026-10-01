@@ -32,6 +32,13 @@ import {
 import { breakout, meanReversion, trendQuality, volatilityProfile } from "./fx";
 import { moonshot as moonshotResearch, rangeMomentum } from "./momentum";
 import { medianIntervalMs, nextRoundForecast, perRoundProbability } from "./pipeline";
+import {
+  applyDistribution,
+  identityRecalibrator,
+  mapLevel,
+  survivalAt as survivalAtThreshold,
+  type Recalibrator,
+} from "./calibration";
 
 // ------------------------------------------------------------------ helpers
 
@@ -598,6 +605,30 @@ export interface IntelWeights {
   hitRate: number | null;
 }
 
+export interface IntelCalibrationInfo {
+  /** distribution layer (band reliability × temperature) earned on held-out rounds */
+  distributionActive: boolean;
+  /** PIT quantile-level remap earned on held-out rounds */
+  quantileActive: boolean;
+  gamma: number;
+  tau: number;
+  /** quantile levels actually read for lo / expected / hi / reach */
+  levels: { rangeLo: number; expected: number; rangeHi: number; reach: number };
+  sample: number;
+  validSample: number;
+  validRawLogLoss: number | null;
+  validCalLogLoss: number | null;
+  improvementPct: number | null;
+  coverageRaw: number | null;
+  coverageCal: number | null;
+  /** P(< 2x) — raw mixture, calibrated, and observed on the trailing 500 rounds */
+  crash: { raw: number; calibrated: number; observed: number };
+  /** legacy median log-bias rectification is only used while recalibration is inactive */
+  legacyCorrection: boolean;
+  modeBand: string;
+  reason: string;
+}
+
 export interface FullIntelligenceForecast {
   engine: "full-intelligence-v6.3";
   source: string;
@@ -612,6 +643,8 @@ export interface FullIntelligenceForecast {
   rangeHi: number;
   band: string;
   distribution: { label: string; edge: number; probability: number; representative: number }[];
+  /** un-recalibrated mixture — this is what the calibration ledger scores and fits on */
+  rawDistribution: number[];
   baseMultiplier: number;
   tailLift: number;
   moonshotReach: number;
@@ -654,6 +687,8 @@ export interface FullIntelligenceForecast {
     regime: { label: string; volatility: number; drift: number };
     independence: { chiSquare: number; independent: boolean };
     honesty: string;
+    /** how the published headline was derived from the calibrated distribution */
+    calibration: IntelCalibrationInfo;
   };
 }
 
@@ -673,6 +708,8 @@ export interface IntelOptions {
   engineStates?: Record<string, string>;
   /** v6.5 registered custom engines (F-12) — join the mixture as experts */
   extraEngines?: { key: string; label: string; prior: number; predict: (rounds: Round[]) => number[] }[];
+  /** out-of-sample recalibrator fitted on the resolved intel ledger (see calibration.ts) */
+  recalibrator?: Recalibrator | null;
 }
 
 const PRIOR: Record<ComponentKey, number> = {
@@ -952,14 +989,37 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
   );
   const agreement = clamp(1 - COMPONENTS.reduce((a, c) => a + weights[c] * jsDivergence(dists[c], mixture), 0) / Math.log(2) * 4);
 
-  const corr = opts.correction ?? 0;
+  // ---------- headline from ONE calibrated distribution
+  // Every published number (expected, p25–p75 range, p90 reach, band, horizon
+  // probabilities) is read off the same distribution, so they can never
+  // contradict each other. The recalibrator only changes anything when it has
+  // beaten the raw mixture on held-out rounds (calibration.ts).
+  const rc = opts.recalibrator ?? identityRecalibrator("No recalibrator supplied.");
+  const calibrated = rc.active ? applyDistribution(mixture, rc) : mixture;
+  const lvl = {
+    rangeLo: mapLevel(rc, 0.25),
+    expected: mapLevel(rc, 0.5),
+    rangeHi: mapLevel(rc, 0.75),
+    reach: mapLevel(rc, 0.9),
+  };
+  // legacy median log-bias rectification: only while no recalibration layer is
+  // earned (otherwise the median would be corrected twice).
+  const corr = rc.active || rc.quantileActive ? 0 : opts.correction ?? 0;
   const factor = corr ? clamp(Math.exp(corr), 0.5, 2) : 1;
   const expectedRaw = quantileOf(mixture, 0.5);
-  const expected = Math.max(1, expectedRaw * factor);
-  const rangeLo = Math.max(1, quantileOf(mixture, 0.25) * (0.6 + 0.4 * factor));
-  const rangeHi = Math.max(rangeLo + 0.01, quantileOf(mixture, 0.75) * (0.8 + 0.2 * factor));
-  const reach = quantileOf(mixture, 0.9);
-  const tailShare = mixture[4] + mixture[5];
+  const qExpected = quantileOf(calibrated, lvl.expected);
+  const qLo = quantileOf(calibrated, lvl.rangeLo);
+  const qHi = quantileOf(calibrated, lvl.rangeHi);
+  const qReach = quantileOf(calibrated, lvl.reach);
+  // the rectification shifts the whole central block (in log space) so the
+  // range keeps bracketing the point estimate
+  const expected = Math.max(1, qExpected * factor);
+  const rangeLo = Math.max(1, Math.min(qLo * factor, expected));
+  const rangeHi = Math.max(expected, qHi * factor, rangeLo + 0.01);
+  const reach = Math.max(rangeHi, qReach * factor);
+  const tailShare = calibrated[4] + calibrated[5];
+  const recentCrash = recent.length ? recent.filter((x) => x < 2).length / recent.length : 0;
+  const modeIndex = calibrated.indexOf(Math.max(...calibrated));
 
   // ---------- V5 confidence (state conviction) + calibrated confidence
   const scoreVals = STATES.map((s) => cls.scores[s]).sort((a, b) => b - a);
@@ -990,17 +1050,9 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
   const confidenceLabel = confidence >= 0.66 ? "HIGH" : confidence >= 0.38 ? "MEDIUM" : "LOW";
   const skillPct = skillRaw !== null ? r2(skillRaw * 100) : null;
 
-  // ---------- horizon outlook (V5 h+5) from the mixture survival
+  // ---------- horizon outlook (V5 h+5) from the calibrated distribution
   const baseSurv = (t: number) => surv(t);
-  const mixS10 = survivalAt(mixture, 4);
-  const perRoundAt = (t: number): number => {
-    if (t === 2) return survivalAt(mixture, 2);
-    if (t === 5) return survivalAt(mixture, 3);
-    if (t === 10) return mixS10;
-    if (t === 100) return mixture[5];
-    const b10 = baseSurv(10);
-    return b10 > 0 ? mixS10 * (baseSurv(t) / b10) : baseSurv(t);
-  };
+  const perRoundAt = (t: number): number => survivalAtThreshold(calibrated, t);
   const horizonOutlook: HorizonRow[] = [2, 5, 10, 20, 50, 100].map((t) => {
     const p = clamp(perRoundAt(t), 1e-6, 1 - 1e-6);
     let run = 0;
@@ -1055,7 +1107,7 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
   const note =
     `${top.state}: ${STATE_META[top.state].meaning.toLowerCase()} (from ${current}). ` +
     `Last round settled ${last.toFixed(2)}x in the ${BAND_LABELS[bandIndex(last)]} band with ${lastEnergy} energy, forming a ${shapeWord(window10)} across the last ${window10.length} rounds. ` +
-    `Mixture of ${COMPONENTS.length} engines puts P(≥2x) at ${Math.round(survivalAt(mixture, 2) * 100)}%` +
+    `Mixture of ${COMPONENTS.length} engines${rc.active ? " (recalibrated)" : ""} puts P(≥2x) at ${Math.round(survivalAtThreshold(calibrated, 2) * 100)}%` +
     (tailShare >= 0.05 ? ` and ${Math.round(tailShare * 100)}% on the 10x+ bands.` : ".");
 
   return {
@@ -1070,7 +1122,8 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
     rangeLo: r2(rangeLo),
     rangeHi: r2(rangeHi),
     band: bandLabel,
-    distribution: mixture.map((p, i) => ({ label: BAND_LABELS[i], edge: EDGES[i], probability: r4(p), representative: r2(representative[i]) })),
+    distribution: calibrated.map((p, i) => ({ label: BAND_LABELS[i], edge: EDGES[i], probability: r4(p), representative: r2(representative[i]) })),
+    rawDistribution: mixture.map(r4),
     baseMultiplier: r2(expectedRaw),
     tailLift: v6band.tailLift,
     moonshotReach: r2(reach),
@@ -1081,10 +1134,18 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
           biasPct: r4(corr),
           sampleSize: opts.correctionSample ?? 0,
           note: corr > 0
-            ? `Full-intelligence median ran ${Math.round(corr * 100)}% low (median log error) across ${opts.correctionSample ?? 0} verified rounds — point estimate scaled up ${factor.toFixed(2)}x.`
-            : `Full-intelligence median ran ${Math.round(-corr * 100)}% high (median log error) across ${opts.correctionSample ?? 0} verified rounds — point estimate scaled down ${factor.toFixed(2)}x.`,
+            ? `Full-intelligence median ran ${Math.round(corr * 100)}% low (median log error) across ${opts.correctionSample ?? 0} verified rounds — central range scaled up ${factor.toFixed(2)}x.`
+            : `Full-intelligence median ran ${Math.round(-corr * 100)}% high (median log error) across ${opts.correctionSample ?? 0} verified rounds — central range scaled down ${factor.toFixed(2)}x.`,
         }
-      : null,
+      : opts.correction && (rc.active || rc.quantileActive)
+        ? {
+            active: false,
+            factor: 1,
+            biasPct: r4(opts.correction),
+            sampleSize: opts.correctionSample ?? 0,
+            note: "Median log-bias rectification superseded by out-of-sample distribution / quantile recalibration.",
+          }
+        : null,
     lastRound: { multiplier: last, band: BAND_LABELS[bandIndex(last)] },
     components: compOut.map((c) => ({ model: c.key, p: c.p2, weight: c.weight, mid: c.mid })),
     note,
@@ -1121,6 +1182,24 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
       regime: { label: regime, volatility: r4(regVol), drift: r4(regDrift) },
       independence: { chiSquare: r2(bandTest.chiSquare), independent: bandTest.independent },
       honesty,
+      calibration: {
+        distributionActive: rc.active,
+        quantileActive: rc.quantileActive,
+        gamma: rc.gamma,
+        tau: rc.tau,
+        levels: { rangeLo: r4(lvl.rangeLo), expected: r4(lvl.expected), rangeHi: r4(lvl.rangeHi), reach: r4(lvl.reach) },
+        sample: rc.sample,
+        validSample: rc.validSample,
+        validRawLogLoss: rc.validRawLogLoss,
+        validCalLogLoss: rc.validCalLogLoss,
+        improvementPct: rc.improvementPct,
+        coverageRaw: rc.coverageRaw,
+        coverageCal: rc.coverageCal,
+        crash: { raw: r4(mixture[0] + mixture[1]), calibrated: r4(calibrated[0] + calibrated[1]), observed: r4(recentCrash) },
+        legacyCorrection: corr !== 0,
+        modeBand: BAND_LABELS[modeIndex],
+        reason: rc.reason,
+      },
     },
   };
 }

@@ -33,7 +33,7 @@ export default function Ask() {
   const idx = useMemo(buildIndex, []);
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<(Passage & { score: number })[]>([]);
-  const [ans, setAns] = useState<{ answer: string; refused: boolean; citations: string[]; model?: string } | null>(null);
+  const [ans, setAns] = useState<{ answer: string; refused: boolean; citations: string[]; model?: string; reason?: string; grounding?: "docs" | "data" | "general" | "none" } | null>(null);
   const [busy, setBusy] = useState(false);
   const search = (text: string) => {
     const terms = [...new Set(tok(text))];
@@ -53,16 +53,16 @@ export default function Ask() {
   };
   return (
     <div className="animate-in-up space-y-4">
-      <PageHeader title="Ask Momento" subtitle={`Platform Book F-37. Questions are answered only from ${idx.passages.length.toLocaleString()} passages of the platform docs and the Platform Book, with passage citations. If the passages don't support an answer, it refuses.`} />
+      <PageHeader title="Ask Momento" subtitle={`Platform Book F-37. Answers are grounded in ${idx.passages.length.toLocaleString()} documentation passages (cited by id) and a live data snapshot (cited as [data]); methodology answers from general knowledge are labelled. If nothing supports an answer, it refuses.`} />
       <Panel>
         <div className="flex gap-2">
           <input className={`${inputCls} flex-1`} value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && ask()} placeholder="e.g. How is the track record made tamper-evident?" />
           <button type="button" className={btnCls} disabled={busy} onClick={ask}><Send className="h-4 w-4" />{busy ? "Thinking…" : "Ask"}</button>
         </div>
-        <div className="mt-2 flex flex-wrap gap-2">{["What is the house edge?", "How does the ETA board decide a gap is long?", "What does shadow mode mean for an engine?", "Why are reconstructed rounds never scored?"].map((s) => <button key={s} type="button" className="rounded-md border border-border px-2 py-1 text-[11.5px] text-muted-foreground hover:text-foreground" onClick={() => setQ(s)}>{s}</button>)}</div>
+        <div className="mt-2 flex flex-wrap gap-2">{["What is the house edge?", "How does the ETA board decide a gap is long?", "What does shadow mode mean for an engine?", "Why are reconstructed rounds never scored?", "What's the current intelligence state?", "How do I test a new strategy?", "What patterns should I watch for?"].map((s) => <button key={s} type="button" className="rounded-md border border-border px-2 py-1 text-[11.5px] text-muted-foreground hover:text-foreground" onClick={() => setQ(s)}>{s}</button>)}</div>
       </Panel>
       {ans && (
-        <Panel title="Answer" right={<Verdict ok={!ans.refused}>{ans.refused ? "refused — not in sources" : `${ans.citations.length} citation(s)`}</Verdict>}>
+        <Panel title="Answer" right={<Verdict ok={!ans.refused && ans.grounding !== "general"}>{ans.refused ? "refused — not in sources" : ans.grounding === "data" ? "live data" : ans.grounding === "general" ? "general knowledge — verify" : `${ans.citations.length} citation(s)`}</Verdict>}>
           <p className="whitespace-pre-wrap text-[14px] leading-relaxed">{ans.answer}</p>
           {ans.model && <p className="mt-2 text-[11px] text-muted-foreground">model {ans.model}</p>}
         </Panel>

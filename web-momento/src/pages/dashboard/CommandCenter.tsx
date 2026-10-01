@@ -15,6 +15,7 @@ import { ShapeMiniCard } from "@/components/v64/ShapeViz";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { useV1 } from "@/components/v65/kit";
 
 // V5 state vocabulary, rendered on the v6 pipeline signals.
 const STATE_COLOR: Record<string, string> = {
@@ -78,6 +79,8 @@ export default function CommandCenter() {
     queryFn: () => api.get<Pressure>("/api/v1/mega-pressure"),
     refetchInterval: liveMode ? 15_000 : 30_000,
   });
+  const eta = useV1<{ cadenceMs: number; generatedAt: string; lastTs: string; rows: Array<{ threshold: number; etaMedian: number; etaP90: number; etaMedianAt: string; kmPercentile: number; pressure: number }> }>("eta/board", { refetch: 15_000 });
+  const cone = useV1<{ forecastId: number | null; cadenceMs: number; cone: Array<{ h: number; p25: number; p50: number; p75: number; p90: number; t: number }>; etaMarkers: Array<{ threshold: number; rounds: number; at: string }>; coverage: { p25p75: number | null; belowP90: number | null; n: number }; intelligence?: Record<string, unknown> }>("intelligence/cone?h=5", { refetch: 15_000 });
 
   const stepFeed = useMutation({
     mutationFn: () => api.post<{ generated: number }>("/api/v1/feed/step", { count: 1 }),
@@ -222,17 +225,58 @@ export default function CommandCenter() {
                         rectified {nr.rectification.factor.toFixed(2)}×
                       </span>
                     )}
+                    {nr.intelligence?.calibration && (() => {
+                      const cal = nr.intelligence.calibration;
+                      const on = cal.distributionActive || cal.quantileActive;
+                      return (
+                        <>
+                          <span
+                            title={cal.reason}
+                            className={cn(
+                              "rounded-md border px-2 py-0.5 text-[10px]",
+                              on ? "border-emerald-400/40 bg-emerald-400/5 text-emerald-300" : "border-border/70 bg-background/40 text-muted-foreground",
+                            )}
+                          >
+                            {on
+                              ? `calibrated${cal.improvementPct != null && cal.distributionActive ? ` · −${cal.improvementPct.toFixed(1)}% log-loss` : ""}`
+                              : cal.sample < 60 ? `calibrating ${cal.sample}/60` : "raw mixture (recal not earned)"}
+                          </span>
+                          <span
+                            title={`P(<2x): forecast ${fmtPct(cal.crash.calibrated, 1)} (raw mixture ${fmtPct(cal.crash.raw, 1)}) vs observed ${fmtPct(cal.crash.observed, 1)} over the last 500 rounds`}
+                            className="rounded-md border border-border/70 bg-background/40 px-2 py-0.5 text-[10px] text-muted-foreground"
+                          >
+                            P(&lt;2x) {fmtPct(cal.crash.calibrated, 0)} · seen {fmtPct(cal.crash.observed, 0)}
+                          </span>
+                          {cal.coverageCal != null && (
+                            <span
+                              title="Held-out share of rounds that landed inside the published p25–p75 range (target 50%)"
+                              className={cn(
+                                "rounded-md border px-2 py-0.5 text-[10px]",
+                                Math.abs(cal.coverageCal - 0.5) <= 0.06 ? "border-cyan-400/30 text-cyan-300" : "border-orange-400/30 text-orange-300",
+                              )}
+                            >
+                              p25–p75 hit {fmtPct(cal.coverageCal, 0)}
+                            </span>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Expected</p>
-                      <p className="font-data mt-0.5 text-xl font-semibold tabular-nums text-primary">{fmtMult(nr.expectedMultiplier)}</p>
-                      <p className="mt-0.5 text-[10px] text-muted-foreground">{nr.band} band</p>
+                      <p className="font-data mt-0.5 text-xl font-semibold tabular-nums text-primary transition-all duration-400 ease-out">{fmtMult(nr.expectedMultiplier)}</p>
+                      <p className="mt-0.5 text-[10px] text-muted-foreground transition-all duration-400 ease-out">{nr.band} band</p>
                     </div>
                     <div>
                       <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Range · p25–p75</p>
-                      <p className="font-data mt-0.5 text-sm tabular-nums">{fmtMult(nr.rangeLo)} — {fmtMult(nr.rangeHi)}</p>
-                      <p className="mt-0.5 text-[10px] text-muted-foreground">moonshot reach (p90) ~{fmtMult(nr.moonshotReach)}</p>
+                      <p className={cn("font-data mt-0.5 text-sm tabular-nums transition-all duration-400 ease-out", nr.confidence >= 0.66 ? "text-cyan-400" : nr.confidence >= 0.38 ? "text-slate-300" : "text-orange-400")}>{fmtMult(nr.rangeLo)} — {fmtMult(nr.rangeHi)}</p>
+                      <p className="mt-0.5 text-[10px] text-muted-foreground transition-all duration-400 ease-out">
+                        moonshot reach (p90) ~{fmtMult(nr.moonshotReach)}
+                        {nr.intelligence?.calibration && (
+                          <span className="ml-2 text-muted-foreground/60">· mode {nr.intelligence.calibration.modeBand}</span>
+                        )}
+                      </p>
                     </div>
                   </div>
                   <div>
@@ -242,7 +286,7 @@ export default function CommandCenter() {
                         <div key={d.label} className="flex h-full min-w-0 flex-1 flex-col items-center gap-0.5" title={`${d.label}: ${fmtPct(d.probability, 1)}`}>
                           <div className="flex w-full flex-1 items-end">
                             <div
-                              className="w-full rounded-t-sm"
+                              className="w-full rounded-t-sm transition-all duration-400 ease-out"
                               style={{
                                 height: `${Math.max(4, (d.probability / Math.max(...nr.distribution.map((x) => x.probability), 0.0001)) * 100)}%`,
                                 background: d.edge >= 10 ? "#F59E0B" : d.edge >= 5 ? "#8B5CF6" : d.edge >= 2 ? "#06B6D4" : "#3B82F6",
@@ -291,23 +335,36 @@ export default function CommandCenter() {
                   <p className="text-[11px] leading-relaxed text-muted-foreground">{nr.note}</p>
                   <div className="flex flex-wrap gap-1.5 border-t border-border/50 pt-2.5">
                     {nr.components.map((c) => (
-                      <span
+                      <div
                         key={c.model}
+                        className={cn(
+                          "font-data rounded-md border px-2 py-0.5 text-[11px] transition-all duration-400 ease-out",
+                          c.weight > 0.15 ? "border-primary/40 bg-primary/10 text-primary" : "border-border/70 bg-background/40 text-muted-foreground"
+                        )}
                         title={nr.intelligence ? `earned weight ${fmtPct(c.weight, 1)} · P(≥2×) ${fmtPct(c.p, 1)}` : undefined}
-                        className="font-data rounded-md border border-border/70 bg-background/40 px-2 py-0.5 text-[11px] text-muted-foreground"
                       >
-                        {c.model} {c.mid.toFixed(2)}
-                        {nr.intelligence && <span className="ml-1 text-muted-foreground/60">·{Math.round(c.weight * 100)}%</span>}
-                      </span>
+                        <div className="flex items-center gap-1">
+                          <span>{c.model} {c.mid.toFixed(2)}</span>
+                          {nr.intelligence && <span className="text-muted-foreground/60">·{Math.round(c.weight * 100)}%</span>}
+                        </div>
+                        {nr.intelligence && (
+                          <div className="mt-0.5 h-0.5 w-full max-w-[40px] rounded-full bg-border overflow-hidden">
+                            <div
+                              className="h-full bg-current transition-all duration-400 ease-out"
+                              style={{ width: `${Math.min(100, c.weight * 100)}%` }}
+                            />
+                          </div>
+                        )}
+                      </div>
                     ))}
-                    <span className="font-data rounded-md border border-primary/30 bg-primary/5 px-2 py-0.5 text-[11px] text-primary/80">
+                    <span className="font-data rounded-md border border-primary/30 bg-primary/5 px-2 py-0.5 text-[11px] text-primary/80 transition-all duration-400 ease-out">
                       {nr.intelligence ? "mixture" : "ensemble"} {nr.expectedMultiplier.toFixed(2)}
                     </span>
                     {nr.intelligence && (
                       <span
                         title={nr.intelligence.honesty}
                         className={cn(
-                          "font-data rounded-md border px-2 py-0.5 text-[11px]",
+                          "font-data rounded-md border px-2 py-0.5 text-[11px] transition-all duration-400 ease-out",
                           (nr.intelligence.skillPct ?? 0) > 0 ? "border-emerald-400/40 text-emerald-300" : "border-border/70 text-muted-foreground",
                         )}
                       >
@@ -348,6 +405,8 @@ export default function CommandCenter() {
         <StatTile label="P(≥ 2×)" value={fmtPct(a.exceedance.find((e) => e.threshold === 2)?.rate)} sub={`CI ${fmtPct(a.exceedance.find((e) => e.threshold === 2)?.ci[0], 1)}–${fmtPct(a.exceedance.find((e) => e.threshold === 2)?.ci[1], 1)}`} />
         <StatTile label="Tail pressure" value={`${a.pressure.overallPressure}%`} sub={a.pressure.status} tone={a.pressure.overallPressure >= 65 ? "bad" : a.pressure.overallPressure >= 40 ? "warn" : "good"} />
         <StatTile label="Dry streak" value={a.streaks.currentKind === "below" ? `${a.streaks.current}` : "broken"} sub={`max ${a.streaks.maxBelow} · p(contin) ${fmtPct(a.streaks.markov.pStayBelow, 0)}`} tone={a.streaks.currentKind === "below" && a.streaks.current > 6 ? "warn" : "default"} />
+        <StatTile label="ETA 10×" value={eta.data?.rows.find((r) => r.threshold === 10)?.etaMedian ?? "—"} sub={`KM pct ${fmtPct(eta.data?.rows.find((r) => r.threshold === 10)?.kmPercentile)}`} tone="signal" />
+        <StatTile label="Cone coverage" value={fmtPct(cone.data?.coverage.p25p75)} sub={`n=${cone.data?.coverage.n ?? 0}`} tone={Math.abs((cone.data?.coverage.p25p75 ?? 0.5) - 0.5) < 0.05 ? "good" : "warn"} />
       </MetricGrid>
 
       <div className="grid gap-3 xl:grid-cols-3">
