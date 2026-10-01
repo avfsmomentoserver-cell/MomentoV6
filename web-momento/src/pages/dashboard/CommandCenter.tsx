@@ -371,6 +371,42 @@ export default function CommandCenter() {
                         skill vs baseline {nr.intelligence.skillPct == null ? "—" : `${nr.intelligence.skillPct > 0 ? "+" : ""}${nr.intelligence.skillPct.toFixed(1)}%`}
                       </span>
                     )}
+                    {nr.intelligence?.rangeAdjustments && (
+                      <>
+                        {nr.intelligence.rangeAdjustments.regimeScale !== 1 && (
+                          <span
+                            title={`Regime scale: ${nr.intelligence.rangeAdjustments.regimeScale}`}
+                            className="font-data rounded-md border border-blue-400/40 bg-blue-400/10 px-2 py-0.5 text-[11px] text-blue-300"
+                          >
+                            regime ×{nr.intelligence.rangeAdjustments.regimeScale.toFixed(2)}
+                          </span>
+                        )}
+                        {nr.intelligence.rangeAdjustments.breakoutScale !== 1 && (
+                          <span
+                            title={`Breakout scale: ${nr.intelligence.rangeAdjustments.breakoutScale}`}
+                            className="font-data rounded-md border border-purple-400/40 bg-purple-400/10 px-2 py-0.5 text-[11px] text-purple-300"
+                          >
+                            breakout ×{nr.intelligence.rangeAdjustments.breakoutScale.toFixed(2)}
+                          </span>
+                        )}
+                        {nr.intelligence.rangeAdjustments.dnaPatternTilt !== 0 && (
+                          <span
+                            title={`DNA pattern tilt: ${nr.intelligence.rangeAdjustments.dnaPatternTilt}`}
+                            className="font-data rounded-md border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[11px] text-amber-300"
+                          >
+                            dna {nr.intelligence.rangeAdjustments.dnaPatternTilt > 0 ? "+" : ""}{Math.round(nr.intelligence.rangeAdjustments.dnaPatternTilt * 100)}%
+                          </span>
+                        )}
+                        {nr.intelligence.rangeAdjustments.linguisticsTilt !== 0 && (
+                          <span
+                            title={`Linguistics tilt: ${nr.intelligence.rangeAdjustments.linguisticsTilt}`}
+                            className="font-data rounded-md border border-cyan-400/40 bg-cyan-400/10 px-2 py-0.5 text-[11px] text-cyan-300"
+                          >
+                            ling {nr.intelligence.rangeAdjustments.linguisticsTilt > 0 ? "+" : ""}{Math.round(nr.intelligence.rangeAdjustments.linguisticsTilt * 100)}%
+                          </span>
+                        )}
+                      </>
+                    )}
                   </div>
                 </div>
               </div>

@@ -615,6 +615,31 @@ export interface IntelligenceBlock {
   honesty: string;
   /** predictor: how the headline was derived from the out-of-sample calibrated distribution */
   calibration?: IntelCalibrationInfo;
+  /** blend mids for all engines including new intelligence engines */
+  blend: {
+    markovMid: number;
+    percentileMid: number;
+    dnaMid: number;
+    bandMid: number;
+    mlMid: number;
+    ensembleMid: number;
+    signalsMid: number;
+    baselineMid: number;
+    dnaPatternMid: number;
+    linguisticsMid: number;
+    shapeMid: number;
+    fxRegimeMid: number;
+  };
+  /** comprehensive range adjustment layer */
+  rangeAdjustments: {
+    regimeScale: number;
+    supportResistanceAdj: boolean;
+    breakoutScale: number;
+    trendShift: number;
+    dnaPatternTilt: number;
+    linguisticsTilt: number;
+    finalScale: number;
+  };
 }
 
 export interface IntelCalibrationRow {

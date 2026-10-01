@@ -706,3 +706,155 @@ export function houseEdge(rounds: Round[]) {
     evTable: [1.2, 1.5, 2, 3, 5, 10, 50, 100].map(evAt),
   };
 }
+
+// ------------------------------------------------------ distribution engines
+
+export function bandShares(values: number[], prior?: number[], pseudo = 0): number[] {
+  const BAND_LABELS = ["<1.5x", "1.5–2x", "2–5x", "5–10x", "10–100x", "100x+"];
+  const NB = BAND_LABELS.length;
+  const c = new Array(NB).fill(0);
+  for (const v of values) c[bandIndex(v)]++;
+  if (prior && pseudo > 0) for (let i = 0; i < NB; i++) c[i] += prior[i] * pseudo;
+  const s = c.reduce((a, b) => a + b, 0);
+  return s > 0 ? c.map((x) => x / s) : c.map(() => 1 / NB);
+}
+
+export const normalize = (xs: number[]): number[] => {
+  const s = xs.reduce((a, b) => a + Math.max(0, b), 0);
+  return s > 0 ? xs.map((x) => Math.max(0, x) / s) : xs.map(() => 1 / xs.length);
+};
+
+/**
+ * DNA pattern distribution: maps statistically significant k-mer patterns to band probabilities.
+ * Uses pattern lift (how much better than base rate) to weight the distribution.
+ */
+export function dnaPatternDistribution(rounds: Round[]): number[] {
+  const base = bandShares(rounds.map((r) => r.multiplier));
+  if (rounds.length < 100) return base;
+
+  // Simplified pattern detection: look at recent k-mers
+  const k = 3;
+  const recent = rounds.slice(-50);
+  const bandSeq = recent.map((r) => {
+    const m = r.multiplier;
+    if (m < 1.5) return "A";
+    if (m < 2) return "B";
+    if (m < 5) return "C";
+    if (m < 10) return "D";
+    if (m < 100) return "E";
+    return "F";
+  });
+
+  // Build pattern→distribution mapping from history
+  const patternToDist = new Map<string, number[]>();
+  for (let i = k; i < rounds.length - 1; i++) {
+    const pattern = rounds.slice(i - k, i).map((r) => {
+      const m = r.multiplier;
+      if (m < 1.5) return "A";
+      if (m < 2) return "B";
+      if (m < 5) return "C";
+      if (m < 10) return "D";
+      if (m < 100) return "E";
+      return "F";
+    }).join("");
+    const nextBand = bandIndex(rounds[i].multiplier);
+    const dist = patternToDist.get(pattern) ?? [0, 0, 0, 0, 0, 0];
+    dist[nextBand]++;
+    patternToDist.set(pattern, dist);
+  }
+
+  // Convert counts to probabilities
+  for (const [pattern, counts] of patternToDist) {
+    const sum = counts.reduce((a, b) => a + b, 0);
+    patternToDist.set(pattern, counts.map((c) => c / sum));
+  }
+
+  // Get distribution for current pattern
+  const currentPattern = bandSeq.slice(-k).join("");
+  const patternDist = patternToDist.get(currentPattern);
+
+  if (!patternDist) return base;
+
+  // Blend pattern distribution with baseline
+  const blend = patternDist.map((p, i) => p * 0.6 + base[i] * 0.4);
+  return normalize(blend);
+}
+
+/**
+ * Linguistics token distribution: maps recent linguistic tokens to band probabilities.
+ * Uses token frequency and recent weighting.
+ */
+export function linguisticsTokenDistribution(rounds: Round[]): number[] {
+  const base = bandShares(rounds.map((r) => r.multiplier));
+  if (rounds.length < 50) return base;
+
+  const ling = linguistics(rounds, 200);
+  const tokenToDist = new Map<string, number[]>();
+
+  // Build token→distribution mapping
+  for (let i = 0; i < rounds.length - 1; i++) {
+    const r = rounds[i];
+    const band = r.multiplier < 1.5 ? "dust" : r.multiplier < 2 ? "floor" : r.multiplier < 5 ? "low" : r.multiplier < 10 ? "base" : r.multiplier < 100 ? "high" : "mega";
+    const token = `${band}`;
+    const nextBand = bandIndex(rounds[i + 1].multiplier);
+    const dist = tokenToDist.get(token) ?? [0, 0, 0, 0, 0, 0];
+    dist[nextBand]++;
+    tokenToDist.set(token, dist);
+  }
+
+  // Convert to probabilities
+  for (const [token, counts] of tokenToDist) {
+    const sum = counts.reduce((a, b) => a + b, 0);
+    tokenToDist.set(token, counts.map((c) => c / sum));
+  }
+
+  // Weight recent tokens
+  const recentTokens = ling.recent.slice(-20).map((r) => r.token.split("·")[0]);
+  let weightedDist = new Array(6).fill(0);
+  let totalWeight = 0;
+
+  for (let i = 0; i < recentTokens.length; i++) {
+    const token = recentTokens[i];
+    const weight = Math.exp(-i / 10);
+    const dist = tokenToDist.get(token) ?? base;
+    weightedDist = weightedDist.map((x, j) => x + dist[j] * weight);
+    totalWeight += weight;
+  }
+
+  if (totalWeight === 0) return base;
+  return weightedDist.map((x) => x / totalWeight);
+}
+
+/**
+ * Shape distribution: maps current shape classification to band probabilities.
+ */
+export function shapeDistribution(rounds: Round[]): number[] {
+  const base = bandShares(rounds.map((r) => r.multiplier));
+  if (rounds.length < 80) return base;
+
+  const shapeData = shape(rounds, 80);
+  const shapeToDist = new Map<string, number[]>();
+
+  // Build shape→distribution mapping
+  for (let i = 80; i < rounds.length - 1; i++) {
+    const window = rounds.slice(i - 80, i);
+    const shapeClass = shape(window, 80).classification;
+    const nextBand = bandIndex(rounds[i + 1].multiplier);
+    const dist = shapeToDist.get(shapeClass) ?? [0, 0, 0, 0, 0, 0];
+    dist[nextBand]++;
+    shapeToDist.set(shapeClass, dist);
+  }
+
+  // Convert to probabilities
+  for (const [shape, counts] of shapeToDist) {
+    const sum = counts.reduce((a, b) => a + b, 0);
+    shapeToDist.set(shape, counts.map((c) => c / sum));
+  }
+
+  // Get distribution for current shape
+  const shapeDist = shapeToDist.get(shapeData.classification) ?? base;
+
+  // Blend with baseline based on confidence
+  const confidence = shapeData.confidence;
+  return shapeDist.map((p, i) => p * confidence + base[i] * (1 - confidence));
+}

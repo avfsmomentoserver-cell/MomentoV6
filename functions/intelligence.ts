@@ -22,16 +22,22 @@ import {
   BAND_EDGES,
   BAND_LABELS,
   bandIndex,
+  bandShares,
   bands as bandsOf,
+  dnaPatternDistribution,
+  linguistics,
+  linguisticsTokenDistribution,
   medianWait,
   moonshot as moonshotOf,
+  normalize,
   percentileWait,
   pressure as pressureOf,
   shape as shapeOf,
+  shapeDistribution,
   streaks as streaksOf,
   type Round,
 } from "./analysis";
-import { breakout, meanReversion, trendQuality, volatilityProfile } from "./fx";
+import { breakout, fxDistribution, meanReversion, trendQuality, volatilityProfile, type VolatilityProfile } from "./fx";
 import { moonshot as moonshotResearch, rangeMomentum } from "./momentum";
 import { medianIntervalMs, nextRoundForecast, perRoundProbability } from "./pipeline";
 import {
@@ -63,10 +69,6 @@ function pct(sorted: number[], q: number): number {
   const hi = Math.ceil(pos);
   return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
 }
-const normalize = (xs: number[]): number[] => {
-  const s = xs.reduce((a, b) => a + Math.max(0, b), 0);
-  return s > 0 ? xs.map((x) => Math.max(0, x) / s) : xs.map(() => 1 / xs.length);
-};
 
 /** Six v6 bands: <1.5, 1.5–2, 2–5, 5–10, 10–100, 100+. */
 const NB = BAND_LABELS.length;
@@ -504,7 +506,8 @@ function bandShares(values: number[], prior?: number[], pseudo = 0): number[] {
   const c = new Array(NB).fill(0);
   for (const v of values) c[bandIndex(v)]++;
   if (prior && pseudo > 0) for (let i = 0; i < NB; i++) c[i] += prior[i] * pseudo;
-  return normalize(c);
+  const s = c.reduce((a, b) => a + b, 0);
+  return s > 0 ? c.map((x) => x / s) : c.map(() => 1 / NB);
 }
 
 /** Reshape a reference distribution so it honours target survivals P(>=2), P(>=5), P(>=10). */
@@ -545,7 +548,7 @@ function jsDivergence(p: number[], q: number[]): number {
 
 // ------------------------------------------------------------------ types
 
-export const COMPONENTS = ["baseline", "percentile", "markov", "dna", "band", "ml", "ensemble", "signals"] as const;
+export const COMPONENTS = ["baseline", "percentile", "markov", "dna", "band", "ml", "ensemble", "signals", "linguistics", "shape", "fxRegime"] as const;
 export type ComponentKey = (typeof COMPONENTS)[number];
 
 export const COMPONENT_LABEL: Record<ComponentKey, string> = {
@@ -557,6 +560,9 @@ export const COMPONENT_LABEL: Record<ComponentKey, string> = {
   ml: "Logistic ML ensemble",
   ensemble: "v6 earned-weight per-round ensemble",
   signals: "Signal layer (pressure · moonshot · ladders · FX · momentum)",
+  linguistics: "Linguistic token distribution (multi-layer language model)",
+  shape: "Shape projection distribution (trend/acceleration classification)",
+  fxRegime: "FX regime distribution (volatility + trend + mean reversion)",
 };
 
 export interface IntelComponent {
@@ -739,6 +745,9 @@ const PRIOR: Record<ComponentKey, number> = {
   ml: 0.6,
   ensemble: 0.8,
   signals: 0.6,
+  linguistics: 0.75,
+  shape: 0.65,
+  fxRegime: 0.75,
 };
 
 /** Bayesian-mixture weights from trailing log-losses (posterior ∝ prior · e^(-n_eff · ΔL)). */
@@ -957,6 +966,9 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
     ml: mlDist,
     ensemble: ensembleDist,
     signals: signalsDist,
+    linguistics: linguisticsTokenDistribution(rounds),
+    shape: shapeDistribution(rounds),
+    fxRegime: fxDistribution(rounds),
   };
 
   // ---------- earned mixture
@@ -1051,9 +1063,79 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
       hi0 = b * factor;
     }
   }
-  const rangeLo = Math.max(1, Math.min(lo0, expected));
-  const rangeHi = Math.max(expected, hi0, rangeLo + 0.01);
+  let rangeLo = Math.max(1, Math.min(lo0, expected));
+  let rangeHi = Math.max(expected, hi0, rangeLo + 0.01);
   const reach = Math.max(rangeHi, qReach * factor);
+
+  // ---------- comprehensive range adjustment layer
+  let rangeScale = 1;
+  const rangeAdjustments: {
+    regimeScale: number;
+    breakoutScale: number;
+    trendShift: number;
+    dnaPatternTilt: number;
+    finalScale: number;
+  } = {
+    regimeScale: 1,
+    breakoutScale: 1,
+    trendShift: 0,
+    dnaPatternTilt: 0,
+    finalScale: 1,
+  };
+
+  // Regime-based adjustment
+  if (vol) {
+    if (vol.regime === "compressed") {
+      rangeScale *= 0.85;
+      rangeAdjustments.regimeScale = 0.85;
+    } else if (vol.regime === "expanded") {
+      rangeScale *= 1.25;
+      rangeAdjustments.regimeScale = 1.25;
+    }
+  }
+
+  // Breakout adjustment
+  if (brk && brk.compressionPercentile > 0.8) {
+    if (brk.postCompressionBreakRate > brk.baseBreakRate * 1.1) {
+      rangeScale *= 1.3;
+      rangeAdjustments.breakoutScale = 1.3;
+    } else {
+      rangeScale *= 0.9;
+      rangeAdjustments.breakoutScale = 0.9;
+    }
+  }
+
+  // Trend-based shift (applied before final scale)
+  let trendShift = 0;
+  if (trend) {
+    trendShift = trend.direction === "up" ? 0.1 : trend.direction === "down" ? -0.1 : 0;
+    rangeAdjustments.trendShift = trendShift;
+  }
+
+  // DNA pattern tilt
+  const dnaPatternDist = dnaPatternDistribution(rounds);
+  const recentBands = rounds.slice(-10).map((r) => bandIndex(r.multiplier));
+  const upsideBias = recentBands.filter((b) => b >= 3).length >= 5 ? 0.15 : 0;
+  const downsideBias = recentBands.filter((b) => b <= 1).length >= 5 ? -0.1 : 0;
+  if (upsideBias > 0) {
+    rangeScale *= 1.15;
+    rangeAdjustments.dnaPatternTilt = 0.15;
+  } else if (downsideBias < 0) {
+    rangeScale *= 0.9;
+    rangeAdjustments.dnaPatternTilt = -0.1;
+  }
+
+  // Clamp final range scale
+  rangeScale = clamp(rangeScale, 0.5, 2.0);
+  rangeAdjustments.finalScale = rangeScale;
+
+  // Apply trend shift
+  rangeLo = rangeLo * (1 - trendShift);
+  rangeHi = rangeHi * (1 + trendShift);
+
+  // Apply range scale
+  rangeLo = Math.max(1, rangeLo * rangeScale);
+  rangeHi = rangeHi * rangeScale;
   // exact published quantiles (same distribution, same level map, same shift),
   // forced monotone so p05 ≤ … ≤ p95 always holds
   const quantiles = (() => {
@@ -1228,7 +1310,11 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
       ensembleMid: mid("ensemble"),
       signalsMid: mid("signals"),
       baselineMid: mid("baseline"),
+      linguisticsMid: mid("linguistics"),
+      shapeMid: mid("shape"),
+      fxRegimeMid: mid("fxRegime"),
     },
+    rangeAdjustments,
     intelligence: {
       components: compOut,
       agreement: r4(agreement),

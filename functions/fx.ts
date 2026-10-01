@@ -492,6 +492,74 @@ export interface FxSignal {
 }
 
 /** Composite signal vector consumed by the prediction pipeline and the UI. */
+/**
+ * FX distribution: maps comprehensive FX signals to a 6-band probability distribution.
+ * Combines volatility regime, trend quality, mean reversion, and breakout probability.
+ */
+export function fxDistribution(rounds: Round[]): number[] {
+  // Import bandIndex from analysis
+  const bandIndex = (m: number): number => {
+    if (m < 1.5) return 0;
+    if (m < 2) return 1;
+    if (m < 5) return 2;
+    if (m < 10) return 3;
+    if (m < 100) return 4;
+    return 5;
+  };
+
+  const normalize = (xs: number[]): number[] => {
+    const s = xs.reduce((a, b) => a + Math.max(0, b), 0);
+    return s > 0 ? xs.map((x) => Math.max(0, x) / s) : xs.map(() => 1 / xs.length);
+  };
+
+  const baseline = rounds.map((r) => r.multiplier);
+  const baseDist = new Array(6).fill(0);
+  for (const m of baseline) baseDist[bandIndex(m)]++;
+  const base = baseDist.map((c) => c / baseline.length);
+
+  if (rounds.length < 50) return base;
+
+  const vol = volatilityProfile(rounds);
+  const trend = trendQuality(rounds);
+  const rev = meanReversion(rounds);
+  const brk = breakout(rounds);
+
+  // Regime-based tilt
+  let regimeTilt = 0;
+  if (vol.regime === "compressed") regimeTilt = -0.1;
+  else if (vol.regime === "expanded") regimeTilt = 0.1;
+
+  // Trend-based tilt
+  let trendTilt = 0;
+  if (trend.direction === "up") trendTilt = 0.15;
+  else if (trend.direction === "down") trendTilt = -0.15;
+
+  // Mean reversion tilt
+  let revTilt = 0;
+  if (rev.hurst < 0.45) revTilt = -0.2;
+  else if (rev.hurst > 0.55) revTilt = 0.2;
+
+  // Breakout tilt
+  let breakoutTilt = 0;
+  if (brk.compressionPercentile > 0.8 && brk.postCompressionBreakRate > brk.baseBreakRate * 1.1) {
+    breakoutTilt = 0.25;
+  }
+
+  // Combine tilts
+  const totalTilt = Math.max(-0.5, Math.min(0.5, regimeTilt + trendTilt + revTilt + breakoutTilt));
+
+  // Apply tilt to baseline distribution
+  const tilt = (dist: number[], s: number): number[] => {
+    const mid = (dist.length - 1) / 2;
+    const lambda = 0.35;
+    return dist.map((p, i) => p * Math.exp(lambda * s * ((i - mid) / mid)));
+  };
+
+  const tilted = tilt(base, totalTilt);
+  const s = tilted.reduce((a, b) => a + Math.max(0, b), 0);
+  return s > 0 ? tilted.map((x) => Math.max(0, x) / s) : tilted.map(() => 1 / tilted.length);
+}
+
 export function fxSignals(rounds: Round[]): { signals: FxSignal[]; engines: Record<string, unknown> } {
   const trend = trendQuality(rounds);
   const rev = meanReversion(rounds);
