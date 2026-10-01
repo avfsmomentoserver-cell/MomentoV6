@@ -457,6 +457,49 @@ export function shape(rounds: Round[], window = 60): Shape {
   };
 }
 
+// ---------------------------------------------------------------- crash distribution
+
+export interface CrashDistribution {
+  totalCrashRate: number;      // P(1x-1.99x)
+  hardCrashRate: number;       // P(1x-1.2x)
+  softCrashRate: number;       // P(1.2x-1.99x)
+  crashTrend: number;          // Recent - baseline difference
+  window: number;              // Window size used
+}
+
+export function crashDistribution(rounds: Round[], window = 500): CrashDistribution {
+  const recent = rounds.slice(-window);
+  const n = recent.length;
+  
+  // Calculate recent crash rates
+  const hardCrashes = recent.filter((r) => r.multiplier < 1.2).length;
+  const softCrashes = recent.filter((r) => r.multiplier >= 1.2 && r.multiplier < 2).length;
+  const totalCrashes = hardCrashes + softCrashes;
+  
+  const hardCrashRate = n > 0 ? hardCrashes / n : 0;
+  const softCrashRate = n > 0 ? softCrashes / n : 0;
+  const totalCrashRate = n > 0 ? totalCrashes / n : 0;
+  
+  // Calculate baseline crash rate (full history)
+  const all = rounds;
+  const allN = all.length;
+  const allHard = all.filter((r) => r.multiplier < 1.2).length;
+  const allSoft = all.filter((r) => r.multiplier >= 1.2 && r.multiplier < 2).length;
+  const allTotal = allHard + allSoft;
+  const baselineCrashRate = allN > 0 ? allTotal / allN : 0;
+  
+  // Calculate trend
+  const crashTrend = totalCrashRate - baselineCrashRate;
+  
+  return {
+    totalCrashRate,
+    hardCrashRate,
+    softCrashRate,
+    crashTrend,
+    window,
+  };
+}
+
 // ---------------------------------------------------------------- moonshot
 
 export interface Moonshot {

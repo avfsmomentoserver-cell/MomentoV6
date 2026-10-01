@@ -258,6 +258,21 @@ export default function CommandCenter() {
                         spread: {nr.intelligence.candidateSpread.toFixed(2)}
                       </span>
                     )}
+                    {nr.intelligence?.empiricalCrashRate !== undefined && (
+                      <span className="rounded-md border border-gray-400/30 bg-gray-400/5 px-2 py-0.5 text-[10px] text-gray-300" title={`Empirical crash rate: ${nr.intelligence.empiricalCrashRate.toFixed(2)}`}>
+                        crash: {Math.round(nr.intelligence.empiricalCrashRate * 100)}%
+                      </span>
+                    )}
+                    {nr.intelligence?.crashBias !== undefined && Math.abs(nr.intelligence.crashBias) > 0.01 && (
+                      <span className="rounded-md border border-red-400/30 bg-red-400/5 px-2 py-0.5 text-[10px] text-red-300" title={`Crash bias: ${nr.intelligence.crashBias.toFixed(2)}`}>
+                        bias: {nr.intelligence.crashBias > 0 ? "+" : ""}{Math.round(nr.intelligence.crashBias * 100)}%
+                      </span>
+                    )}
+                    {nr.intelligence?.modeWeight !== undefined && nr.intelligence.modeWeight > 0.05 && (
+                      <span className="rounded-md border border-purple-400/30 bg-purple-400/5 px-2 py-0.5 text-[10px] text-purple-300" title={`Mode weight: ${nr.intelligence.modeWeight.toFixed(2)}`}>
+                        mode: {Math.round(nr.intelligence.modeWeight * 100)}%
+                      </span>
+                    )}
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div>

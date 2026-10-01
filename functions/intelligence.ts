@@ -21,6 +21,7 @@ import {
   BAND_LABELS,
   bandIndex,
   bands as bandsOf,
+  crashDistribution,
   medianWait,
   moonshot as moonshotOf,
   percentileWait,
@@ -956,9 +957,17 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
   );
   const agreement = clamp(1 - COMPONENTS.reduce((a, c) => a + weights[c] * jsDivergence(dists[c], mixture), 0) / Math.log(2) * 4);
 
+  // ---------- Phase 3: Crash calibration for high crash rate (1x-1.99x)
+  const crashDist = crashDistribution(rounds, 500);
+  const empiricalCrashRate = crashDist.totalCrashRate;
+  const forecastCrashRate = mixture[0] + mixture[1]; // <1.5x + 1.5-2x bands
+
   const corr = opts.correction ?? 0;
   const factor = corr ? clamp(Math.exp(corr), 0.5, 2) : 1;
-  const expectedRaw = quantileOf(mixture, 0.5);
+  
+  // Use lower quantile when crash rate is high to reflect reality
+  const quantileToUse = empiricalCrashRate > 0.6 ? 0.4 : 0.5;
+  const expectedRaw = quantileOf(mixture, quantileToUse);
   let expected = Math.max(1, expectedRaw * factor);
   let rangeLo = Math.max(1, quantileOf(mixture, 0.25) * (0.6 + 0.4 * factor));
   let rangeHi = Math.max(rangeLo + 0.01, quantileOf(mixture, 0.75) * (0.8 + 0.2 * factor));
@@ -1175,6 +1184,33 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
   // Apply final expected value
   expected = stateWeightedExpected;
 
+  // ---------- Phase 4: Empirical crash calibration
+  // A. Empirical crash adjustment - bias expected down if forecast underestimates crashes
+  const crashBias = empiricalCrashRate - forecastCrashRate;
+  let appliedCrashBias = 0;
+  if (crashBias > 0.1) {
+    // Forecast is too optimistic by 10%+ on crash probability
+    const expectedAdjustment = 1 - crashBias * 0.5;
+    expected = expected * expectedAdjustment;
+    appliedCrashBias = crashBias;
+  }
+
+  // B. Mode-based expected blending
+  const modeValue = representative[mixture.indexOf(Math.max(...mixture))];
+  const crashModeWeight = empiricalCrashRate * 0.3; // Higher crash rate = more weight on mode
+  expected = expected * (1 - crashModeWeight) + modeValue * crashModeWeight;
+
+  // C. Range calibration for high crash rate
+  if (empiricalCrashRate > 0.6) {
+    // Push range lo closer to 1x when crash rate is high
+    rangeLo = Math.max(1, rangeLo * 0.8);
+  }
+  if (empiricalCrashRate > 0.7) {
+    // Compress overall range when crash rate is very high
+    rangeLo = Math.max(1, rangeLo / 0.95);
+    rangeHi = rangeHi * 0.95;
+  }
+
   const bandLabel = computedBand;
   const honesty = bandTest.independent
     ? "Band-to-band transitions pass the chi-square independence test — consecutive rounds behave as independent draws, so engines can only earn weight by out-scoring the measured baseline on the calibration ledger."
@@ -1259,7 +1295,7 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
         stateBias: r4(stateBias),
         tailBandBias: r4(tailBandBias),
         confidenceWeight: r4(confidenceWeight),
-        modeWeight: r4(modeWeight),
+        modeWeight: r4((1 - confidence) * 0.5),
         expectedBandIndex: expectedBandIndex,
         modeBandIndex: modeBandIndex,
         computedBandIndex: Math.round(finalBandIndex),
@@ -1269,6 +1305,13 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
       ceilingAdjustment: r4(ceilingAdjustment),
       candidateSpread: r4(candidateSpread),
       weightedCandidateExpected: r2(candidateExpected),
+      empiricalCrashRate: r4(crashDist.totalCrashRate),
+      baselineCrashRate: r4(crashDist.totalCrashRate - crashDist.crashTrend),
+      crashTrend: r4(crashDist.crashTrend),
+      crashBias: r4(appliedCrashBias),
+      modeWeight: r4(crashModeWeight),
+      hardCrashRate: r4(crashDist.hardCrashRate),
+      softCrashRate: r4(crashDist.softCrashRate),
     },
   };
 }

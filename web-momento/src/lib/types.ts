@@ -580,6 +580,13 @@ export interface IntelligenceBlock {
   ceilingAdjustment?: number;
   candidateSpread?: number;
   weightedCandidateExpected?: number;
+  empiricalCrashRate?: number;
+  baselineCrashRate?: number;
+  crashTrend?: number;
+  crashBias?: number;
+  modeWeight?: number;
+  hardCrashRate?: number;
+  softCrashRate?: number;
 }
 
 export interface IntelCalibrationRow {
