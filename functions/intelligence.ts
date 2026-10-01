@@ -26,6 +26,7 @@ import {
   bands as bandsOf,
   ceilings as ceilingsOf,
   dnaPatternDistribution,
+  enrichRoundsWithAnchors,
   linguistics,
   linguisticsTokenDistribution,
   medianWait,
