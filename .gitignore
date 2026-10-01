@@ -8,11 +8,7 @@ build/
 .local-bundle.mjs
 .local-core.mjs
 
-# Local dev data (SQLite, WAL)
-data/
-*.sqlite
-*.sqlite-wal
-*.sqlite-shm
+
 
 # Cloudflare / wrangler local state
 .wrangler/
