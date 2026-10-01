@@ -24,6 +24,7 @@ import {
   bandIndex,
   bandShares,
   bands as bandsOf,
+  ceilings as ceilingsOf,
   dnaPatternDistribution,
   linguistics,
   linguisticsTokenDistribution,
@@ -706,6 +707,12 @@ export interface FullIntelligenceForecast {
     honesty: string;
     /** how the published headline was derived from the calibrated distribution */
     calibration: IntelCalibrationInfo;
+    /** collapse, ascend, and resistance forecast data */
+    collapseAscendResistance: {
+      collapse: { active: boolean; run: number; strength: number; ceiling: number };
+      ascend: { active: boolean; length: number; strength: number; slope: number; floor: number };
+      resistance: { levels: Array<{ level: number; archetype: string; touches: number }>; dominant: { level: number; archetype: string; touches: number } | null };
+    };
   };
   /** locked-holdout evidence / provenance, attached by the live core (robust-evaluation.ts) */
   evidence?: ForecastEvidence;
@@ -854,6 +861,17 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
   }
   const momentum = rangeMomentum(rounds.slice(-5000));
   const research = n >= 300 ? moonshotResearch(rounds.slice(-8000), 10) : null;
+
+  // ---------- collapse, ascend, and resistance forecast
+  const ceilings = ceilingsOf(rounds);
+  const collapseAscendResistance = {
+    collapse: sig.col,
+    ascend: sig.asc,
+    resistance: {
+      levels: ceilings.levels.map((c) => ({ level: c.level, archetype: c.archetype, touches: c.touches })),
+      dominant: ceilings.dominant ? { level: ceilings.dominant.level, archetype: ceilings.dominant.archetype, touches: ceilings.dominant.touches } : null,
+    },
+  };
 
   // V5 gap/swing momentum + regime
   const pts = m.slice(-21).map(toPoints);
@@ -1375,6 +1393,7 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
         modeBand: BAND_LABELS[modeIndex],
         reason: rc.reason,
       },
+      collapseAscendResistance,
     },
   };
 }

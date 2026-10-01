@@ -641,6 +641,12 @@ export interface IntelligenceBlock {
     linguisticsTilt: number;
     finalScale: number;
   };
+  /** collapse, ascend, and resistance forecast data */
+  collapseAscendResistance?: {
+    collapse: { active: boolean; run: number; strength: number; ceiling: number };
+    ascend: { active: boolean; length: number; strength: number; slope: number; floor: number };
+    resistance: { levels: Array<{ level: number; archetype: string; touches: number }>; dominant: { level: number; archetype: string; touches: number } | null };
+  };
 }
 
 export interface IntelCalibrationRow {

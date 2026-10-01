@@ -508,30 +508,62 @@ export default function CommandCenter() {
           </div>
         </Panel>
 
-        <Panel
-          title="Mega pressure"
-          right={
-            <span className="flex items-center gap-2">
-              <span className="font-data text-[11px] text-muted-foreground">
-                {mega.data ? `${fmtInt(mega.data.overallPressure)}% · ${mega.data.status}` : "—"}
-              </span>
-              <Link to="/dashboard/mega-pressure" className="text-[11px] text-primary hover:underline">Mega →</Link>
-            </span>
-          }
-        >
-          {mega.data ? (
-            <div className="space-y-1.5">
-              {mega.data.targets.slice(0, 3).map((t) => (
-                <div key={t.target}>
-                  <Row label={`≥ ${fmtInt(t.target)}×`} value={`dry ${t.currentRun} · ETA ~${t.etaMedian ?? "—"} · p90 ${t.etaP90 ?? "—"}`} />
-                  <div className="-mt-1.5 pb-1.5">
-                    <Bar value={t.pressurePct} tone={t.pressurePct >= 85 ? "bad" : t.pressurePct >= 65 ? "warn" : "primary"} />
-                  </div>
+        <Panel title="Collapse / Ascend / Resistance">
+          {nr?.intelligence?.collapseAscendResistance ? (
+            <div className="space-y-3 text-[13px]">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2">
+                  <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Collapse</p>
+                  <p className={cn("font-data mt-1 text-sm", nr.intelligence.collapseAscendResistance.collapse.active ? "text-rose-400" : "text-muted-foreground")}>
+                    {nr.intelligence.collapseAscendResistance.collapse.active ? "Active" : "Inactive"}
+                  </p>
+                  <p className="mt-0.5 text-[10.5px] text-muted-foreground">
+                    Run {nr.intelligence.collapseAscendResistance.collapse.run} · Strength {Math.round(nr.intelligence.collapseAscendResistance.collapse.strength * 100)}%
+                  </p>
+                  {nr.intelligence.collapseAscendResistance.collapse.active && (
+                    <p className="mt-0.5 text-[10.5px] text-muted-foreground">Ceiling {fmtMult(nr.intelligence.collapseAscendResistance.collapse.ceiling)}</p>
+                  )}
                 </div>
-              ))}
+                <div className="rounded-lg border border-border/60 bg-background/40 p-2">
+                  <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Ascend</p>
+                  <p className={cn("font-data mt-1 text-sm", nr.intelligence.collapseAscendResistance.ascend.active ? "text-emerald-400" : "text-muted-foreground")}>
+                    {nr.intelligence.collapseAscendResistance.ascend.active ? "Active" : "Inactive"}
+                  </p>
+                  <p className="mt-0.5 text-[10.5px] text-muted-foreground">
+                    Len {nr.intelligence.collapseAscendResistance.ascend.length} · Strength {Math.round(nr.intelligence.collapseAscendResistance.ascend.strength * 100)}%
+                  </p>
+                  {nr.intelligence.collapseAscendResistance.ascend.active && (
+                    <p className="mt-0.5 text-[10.5px] text-muted-foreground">Floor {fmtMult(nr.intelligence.collapseAscendResistance.ascend.floor)} · Slope {nr.intelligence.collapseAscendResistance.ascend.slope}</p>
+                  )}
+                </div>
+              </div>
+              <div className="rounded-lg border border-border/60 bg-background/40 p-2">
+                <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Resistance (Ceilings)</p>
+                {nr.intelligence.collapseAscendResistance.resistance.dominant ? (
+                  <div className="mt-1">
+                    <p className="font-data text-sm text-primary">{fmtMult(nr.intelligence.collapseAscendResistance.resistance.dominant.level)}×</p>
+                    <p className="mt-0.5 text-[10.5px] text-muted-foreground">
+                      {nr.intelligence.collapseAscendResistance.resistance.dominant.archetype} · {nr.intelligence.collapseAscendResistance.resistance.dominant.touches} touches
+                    </p>
+                  </div>
+                ) : (
+                  <p className="mt-1 text-[10.5px] text-muted-foreground">No dominant resistance level detected</p>
+                )}
+                {nr.intelligence.collapseAscendResistance.resistance.levels.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {nr.intelligence.collapseAscendResistance.resistance.levels.slice(0, 4).map((level, i) => (
+                      <span key={i} className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-[10.5px] text-muted-foreground">
+                        {fmtMult(level.level)}× ({level.touches})
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           ) : (
-            <p className="py-4 text-center text-[12px] text-muted-foreground">—</p>
+            <div className="flex items-center justify-center py-4 text-[12px] text-muted-foreground">
+              No collapse/ascend/resistance data available
+            </div>
           )}
         </Panel>
       </div>
