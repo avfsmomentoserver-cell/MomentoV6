@@ -971,7 +971,7 @@ export class MomentoCore extends DurableObject {
           "UPDATE scheduled_predictions SET resolved_ms = ?, actual = ?, outcome_rounds = ?, brier = ?, logloss = ? WHERE id = ?",
           now, actual, outcomeRow.n, +brier.toFixed(6), +logloss.toFixed(6), f.id as number,
         );
-        this.upsertLedger("pipeline", f.window as string, f.threshold as number, { n: 1, brierSum: brier, baseSum: baseBrier, loglossSum: logloss, hits: (p >= 0.5) === (actual === 1) ? 1 : 0, roundsScanned: 0 });
+        this.upsertLedger(f.model as string, f.window as string, f.threshold as number, { n: 1, brierSum: brier, baseSum: baseBrier, loglossSum: logloss, hits: (p >= 0.5) === (actual === 1) ? 1 : 0, roundsScanned: 0 });
         this.appendAccuracyHistory(f.window as string, f.threshold as number);
         summary.resolved = (summary.resolved as number) + 1;
       }
@@ -983,19 +983,39 @@ export class MomentoCore extends DurableObject {
       }
 
       // 3. schedule one open prediction per (window, threshold) — stored before landing
-      const weights = this.weightsMap();
+      // Use full intelligence forecast for per-round probabilities instead of simple pipeline
+      const intel = this.intelForecast(roundsAll, "all");
+      const horizon = intel.horizon ?? 5;
       for (const w of cfg.windows) {
         const nR = expectedRounds(roundsAll, w.ms);
         for (const t of cfg.thresholds) {
           const open = sql.exec("SELECT id FROM scheduled_predictions WHERE window = ? AND threshold = ? AND resolved_ms IS NULL LIMIT 1", w.id, t).toArray();
           if (open.length) continue;
-          const per = perRoundProbability(roundsAll, t, weights);
-          const pWin = windowProbability(per.p, nR);
-          sql.exec(
-            `INSERT INTO scheduled_predictions (source, window, threshold, model, probability, per_round, expected_rounds, components, created_ms, due_ms)
-             VALUES ('all', ?, ?, 'pipeline', ?, ?, ?, ?, ?, ?)`,
-            w.id, t, +pWin.toFixed(6), per.p, nR, JSON.stringify(per.components), now, now + w.ms,
-          );
+          // Use full intelligence per-round probability from horizon outlook
+          const intelData = intel.intelligence as Record<string, unknown> | null;
+          const outlook = intelData?.horizonOutlook as unknown as Array<{ threshold: number; perRound: number }> | null;
+          const perRound = outlook?.find((h) => h.threshold === t)?.perRound ?? null;
+          if (perRound === null || intelData === null) {
+            // Fallback to pipeline if full intelligence not available
+            const weights = this.weightsMap();
+            const per = perRoundProbability(roundsAll, t, weights);
+            const pWin = windowProbability(per.p, nR);
+            sql.exec(
+              `INSERT INTO scheduled_predictions (source, window, threshold, model, probability, per_round, expected_rounds, components, created_ms, due_ms)
+                 VALUES ('all', ?, ?, 'pipeline', ?, ?, ?, ?, ?, ?)`,
+              w.id, t, +pWin.toFixed(6), per.p, nR, JSON.stringify(per.components), now, now + w.ms,
+            );
+          } else {
+            // Use full intelligence probability
+            const pWin = 1 - Math.pow(1 - perRound, nR);
+            const comps = intelData.components as unknown as Array<{ key: string; p2: number }> | null;
+            const components = comps?.map((c) => ({ model: c.key, p: c.p2 })) ?? [];
+            sql.exec(
+              `INSERT INTO scheduled_predictions (source, window, threshold, model, probability, per_round, expected_rounds, components, created_ms, due_ms)
+                 VALUES ('all', ?, ?, 'full-intelligence', ?, ?, ?, ?, ?, ?)`,
+              w.id, t, +pWin.toFixed(6), perRound, nR, JSON.stringify(components), now, now + w.ms,
+            );
+          }
           summary.scheduled = (summary.scheduled as number) + 1;
         }
       }
