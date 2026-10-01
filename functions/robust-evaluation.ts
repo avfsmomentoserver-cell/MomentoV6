@@ -27,6 +27,7 @@ import {
   logLoss,
   mapLevel,
   quantileAt,
+  rangeProfile,
   sanitizeDist,
   survivalAt,
   type CalSample,
@@ -71,8 +72,12 @@ export interface LockedHoldoutEvidence {
   /** standard error of the paired per-round (baseline − published) log loss */
   baselineGainSe: number | null;
   meanBrierSkillPct: number | null;
-  /** holdout share inside the published p25–p75 (target 0.50) */
+  /** holdout share inside p25–p75 (target 0.50) */
   coverage50: number | null;
+  /** holdout share inside the published headline range (target = rangeNominal) */
+  rangeCoverage: number | null;
+  rangeProfile: string;
+  rangeNominal: number;
   recalibrator: Recalibrator;
   baselineDistribution: number[] | null;
   thresholds: ThresholdReliability[];
@@ -85,6 +90,8 @@ export interface EvidenceOptions extends FitOptions {
   minimumBrierSkillPct?: number;
   /** required margin over the baseline, in standard errors of the paired gain */
   minSeMultiple?: number;
+  /** headline range profile whose coverage is reported (default "loose") */
+  rangeProfile?: string | null;
 }
 
 const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
@@ -133,10 +140,10 @@ function thresholdRow(holdout: CalSample[], published: number[][], threshold: nu
   };
 }
 
-function coverage50(holdout: CalSample[], published: number[][], rc: Recalibrator): number | null {
+function intervalCoverage(holdout: CalSample[], published: number[][], rc: Recalibrator, lo = 0.25, hi = 0.75): number | null {
   if (!holdout.length) return null;
-  const qLo = mapLevel(rc, 0.25);
-  const qHi = mapLevel(rc, 0.75);
+  const qLo = mapLevel(rc, lo);
+  const qHi = mapLevel(rc, hi);
   let inside = 0;
   for (let i = 0; i < holdout.length; i++) {
     const lo = quantileAt(published[i], qLo);
@@ -155,6 +162,7 @@ export function evaluateLockedHoldout(input: readonly CalSample[], options: Evid
   const holdout = all.slice(cut);
   const minTrain = options.minTrainingSample ?? 100;
   const minHold = options.minHoldoutSample ?? 50;
+  const prof = rangeProfile(options.rangeProfile);
 
   if (train.length < minTrain || holdout.length < minHold) {
     const rc = identityRecalibrator("Locked holdout not evaluated: insufficient resolved forecasts.", all.length);
@@ -173,6 +181,9 @@ export function evaluateLockedHoldout(input: readonly CalSample[], options: Evid
       baselineGainSe: null,
       meanBrierSkillPct: null,
       coverage50: null,
+      rangeCoverage: null,
+      rangeProfile: prof.name,
+      rangeNominal: prof.nominal,
       recalibrator: rc,
       baselineDistribution: null,
       thresholds: PUBLIC_THRESHOLDS.map((t) => thresholdRow(holdout, raw, t, null)),
@@ -225,7 +236,10 @@ export function evaluateLockedHoldout(input: readonly CalSample[], options: Evid
     baselineSkillPct: base > 0 ? ((base - pub) / base) * 100 : null,
     baselineGainSe: Number.isFinite(se) ? se : null,
     meanBrierSkillPct: meanSkill,
-    coverage50: coverage50(holdout, published, rc),
+    coverage50: intervalCoverage(holdout, published, rc),
+    rangeCoverage: intervalCoverage(holdout, published, rc, prof.lo, prof.hi),
+    rangeProfile: prof.name,
+    rangeNominal: prof.nominal,
     recalibrator: rc,
     baselineDistribution: baseDist,
     thresholds: rows,
@@ -250,6 +264,9 @@ export interface ForecastEvidence {
   baselineSkillPct: number | null;
   meanBrierSkillPct: number | null;
   coverage50: number | null;
+  rangeCoverage: number | null;
+  rangeProfile: string;
+  rangeNominal: number;
   thresholds: { threshold: number; predicted: number; observed: number; brierSkillPct: number | null }[];
   /** true when the confidence label was capped because skill is not demonstrated */
   confidenceGated: boolean;
@@ -277,6 +294,9 @@ export function summarizeEvidence(
     baselineSkillPct: r6(ev.baselineSkillPct),
     meanBrierSkillPct: r6(ev.meanBrierSkillPct),
     coverage50: r6(ev.coverage50),
+    rangeCoverage: r6(ev.rangeCoverage),
+    rangeProfile: ev.rangeProfile,
+    rangeNominal: ev.rangeNominal,
     thresholds: ev.thresholds.map((t) => ({
       threshold: t.threshold,
       predicted: r6(t.predicted) ?? 0,

@@ -14,6 +14,7 @@
 import type { Round } from "./analysis";
 import { BAND_LABELS, bandIndex } from "./analysis";
 import { anchors, rangeMomentum } from "./momentum";
+import { rangeProfile } from "./calibration";
 import { wordOf } from "./v64";
 import type { CoreAdapter } from "./v64routes";
 import {
@@ -1310,7 +1311,7 @@ export async function routeV65(a: CoreAdapter, method: string, path: string, q: 
   if (p === "accuracy/coverage" && method === "GET") {
     const which = pickLedger(a, q);
     const rows = ledgerRows(a, which, num(q.get("n"), 5000, 50, 50000));
-    return ok({ ledger: which, ...coverageACI(rows.map((r) => ({ dist: r.dist, lo: r.lo, hi: r.hi, actual: r.actual })), 0.5, num(q.get("gamma"), 0.01, 0.001, 0.2)) });
+    return ok({ ledger: which, ...coverageACI(rows.map((r) => ({ dist: r.dist, lo: r.lo, hi: r.hi, actual: r.actual })), num(q.get("target"), rangeProfile(a.setting("range_profile")).nominal, 0.1, 0.95), num(q.get("gamma"), 0.01, 0.001, 0.2)), rangeProfile: rangeProfile(a.setting("range_profile")).name });
   }
 
   // ---- F-18 ledger

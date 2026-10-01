@@ -37,7 +37,9 @@ import {
   applyDistribution,
   identityRecalibrator,
   mapLevel,
+  rangeProfile,
   survivalAt as survivalAtThreshold,
+  type RangeProfileName,
   type Recalibrator,
 } from "./calibration";
 
@@ -649,6 +651,10 @@ export interface FullIntelligenceForecast {
   baseMultiplier: number;
   tailLift: number;
   moonshotReach: number;
+  /** which central interval rangeLo–rangeHi is (default "loose" = p15–p85, ~70% of rounds) */
+  rangeProfile: { name: RangeProfileName; lo: number; hi: number; reach: number; nominal: number; label: string };
+  /** exact quantiles of the published (calibrated) distribution */
+  quantiles: { p05: number; p10: number; p15: number; p25: number; p50: number; p75: number; p85: number; p90: number; p95: number };
   rectification: { active: boolean; factor: number; biasPct: number; sampleSize: number; note: string } | null;
   lastRound: { multiplier: number; band: string };
   components: { model: string; p: number; weight: number; mid: number }[];
@@ -713,6 +719,8 @@ export interface IntelOptions {
   extraEngines?: { key: string; label: string; prior: number; predict: (rounds: Round[]) => number[] }[];
   /** out-of-sample recalibrator fitted on the resolved intel ledger (see calibration.ts) */
   recalibrator?: Recalibrator | null;
+  /** headline range profile: "tight" p25–p75, "loose" p15–p85 (default), "wide" p10–p90 */
+  rangeProfile?: RangeProfileName | string | null;
 }
 
 const PRIOR: Record<ComponentKey, number> = {
@@ -993,17 +1001,18 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
   const agreement = clamp(1 - COMPONENTS.reduce((a, c) => a + weights[c] * jsDivergence(dists[c], mixture), 0) / Math.log(2) * 4);
 
   // ---------- headline from ONE calibrated distribution
-  // Every published number (expected, p25–p75 range, p90 reach, band, horizon
+  // Every published number (expected, headline range, reach, band, horizon
   // probabilities) is read off the same distribution, so they can never
   // contradict each other. The recalibrator only changes anything when it has
   // beaten the raw mixture on held-out rounds (calibration.ts).
   const rc = opts.recalibrator ?? identityRecalibrator("No recalibrator supplied.");
   const calibrated = rc.active ? applyDistribution(mixture, rc) : mixture;
+  const prof = rangeProfile(opts.rangeProfile);
   const lvl = {
-    rangeLo: mapLevel(rc, 0.25),
+    rangeLo: mapLevel(rc, prof.lo),
     expected: mapLevel(rc, 0.5),
-    rangeHi: mapLevel(rc, 0.75),
-    reach: mapLevel(rc, 0.9),
+    rangeHi: mapLevel(rc, prof.hi),
+    reach: mapLevel(rc, prof.reach),
   };
   // legacy median log-bias rectification: only while no recalibration layer is
   // earned (otherwise the median would be corrected twice).
@@ -1020,6 +1029,20 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
   const rangeLo = Math.max(1, Math.min(qLo * factor, expected));
   const rangeHi = Math.max(expected, qHi * factor, rangeLo + 0.01);
   const reach = Math.max(rangeHi, qReach * factor);
+  // exact published quantiles (same distribution, same level map, same shift),
+  // forced monotone so p05 ≤ … ≤ p95 always holds
+  const quantiles = (() => {
+    const keys = [["p05", 0.05], ["p10", 0.1], ["p15", 0.15], ["p25", 0.25], ["p50", 0.5], ["p75", 0.75], ["p85", 0.85], ["p90", 0.9], ["p95", 0.95]] as const;
+    let prev = 1;
+    const out = {} as FullIntelligenceForecast["quantiles"];
+    for (const [k, q] of keys) {
+      const v = k === "p50" ? expected : Math.max(1, quantileOf(calibrated, mapLevel(rc, q)) * factor);
+      prev = Math.max(prev, v);
+      out[k] = r2(prev);
+    }
+    return out;
+  })();
+  const pctLabel = (q: number) => `p${Math.round(q * 100)}`;
   const tailShare = calibrated[4] + calibrated[5];
   const recentCrash = recent.length ? recent.filter((x) => x < 2).length / recent.length : 0;
   const modeIndex = calibrated.indexOf(Math.max(...calibrated));
@@ -1130,6 +1153,8 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
     baseMultiplier: r2(expectedRaw),
     tailLift: v6band.tailLift,
     moonshotReach: r2(reach),
+    rangeProfile: { ...prof, label: `${pctLabel(prof.lo)}–${pctLabel(prof.hi)}` },
+    quantiles,
     rectification: corr
       ? {
           active: Math.abs(corr) >= 0.05,
@@ -1221,7 +1246,7 @@ export function scoreIntelForecast(
   const inRange = actual >= f.rangeLo && actual <= f.rangeHi;
   const loose = actual >= f.rangeLo / 1.5 && actual <= f.rangeHi * 1.5;
   const short = (i: number) => BAND_LABELS[i].replace("x", "");
-  if (inRange && Math.abs(bandErr) <= 1) return { verdict: "hit", bandErr, logErr, reason: `Inside the p25–p75 range in ${bandErr === 0 ? "the" : "an adjacent"} projected band — ${f.state} projection held.` };
+  if (inRange && Math.abs(bandErr) <= 1) return { verdict: "hit", bandErr, logErr, reason: `Inside the published range in ${bandErr === 0 ? "the" : "an adjacent"} projected band — ${f.state} projection held.` };
   if (Math.abs(bandErr) <= 1 && loose) return { verdict: "adjacent", bandErr, logErr, reason: `Off by one band (${short(eb)} → ${short(ab)}) inside the padded range — direction correct.` };
   if (bandErr > 1) return { verdict: "miss-high", bandErr, logErr, reason: `Landed ${bandErr} bands above the projected ${short(eb)} — the tail ran hotter than the mixture implied under ${f.state}.` };
   if (bandErr < -1) return { verdict: "miss-low", bandErr, logErr, reason: `Landed ${-bandErr} bands below the projected ${short(eb)} — base bands held weight the mixture gave to the upside under ${f.state}.` };

@@ -1313,7 +1313,7 @@ export class MomentoCore extends DurableObject {
     const stamp = sql.exec("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS id FROM intel_calibrations").toArray()[0] as { n: number; id: number };
     const window = clampInt(this.setting("intel_recalibration_window") ?? "1000", 100, 3000, 1000);
     const live = this.intelRecalibrator();
-    const key = `${Math.floor(stamp.n / 10)}:${this.asOfMs ?? "live"}:${window}:${live.active}:${live.quantileActive}`;
+    const key = `${Math.floor(stamp.n / 10)}:${this.asOfMs ?? "live"}:${window}:${live.active}:${live.quantileActive}:${this.setting("range_profile") ?? "loose"}`;
     if (this.evidenceCache?.key === key) return this.evidenceCache;
     const cutoffRow = sql
       .exec("SELECT MAX(created_ms) AS t FROM intel_calibrations WHERE resolved_ms IS NOT NULL AND actual IS NOT NULL AND created_ms < ?", this.asOfMs ?? 9e15)
@@ -1322,7 +1322,7 @@ export class MomentoCore extends DurableObject {
     let full: LockedHoldoutEvidence | null = null;
     let value: ForecastEvidence;
     try {
-      full = evaluateLockedHoldout(this.intelCalSamples(window));
+      full = evaluateLockedHoldout(this.intelCalSamples(window), { rangeProfile: this.setting("range_profile") });
       value = summarizeEvidence(full, live, meta);
     } catch (e) {
       console.error("[momento-v6] locked-holdout evidence failed", e);
@@ -1346,7 +1346,7 @@ export class MomentoCore extends DurableObject {
     const head = rounds[rounds.length - 1];
     const stamp = sql.exec("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS id FROM intel_calibrations").toArray()[0] as { n: number; id: number };
     const regKey = JSON.stringify(reg.states) + "|" + reg.extras.map((e) => e.key).join(",");
-    const key = [source, rounds.length, head?.id ?? 0, head?.tsMs ?? 0, head?.multiplier ?? 0, stamp.n, stamp.id, this.asOfMs ?? "live", regKey, this.setting("intel_recalibration") ?? "1"].join(":");
+    const key = [source, rounds.length, head?.id ?? 0, head?.tsMs ?? 0, head?.multiplier ?? 0, stamp.n, stamp.id, this.asOfMs ?? "live", regKey, this.setting("intel_recalibration") ?? "1", this.setting("range_profile") ?? "loose", this.setting("evidence_gate") ?? "1"].join(":");
     const hit = this.intelForecastCache.get(key);
     if (hit) return hit;
     const corr = this.intelCorrection();
@@ -1358,6 +1358,7 @@ export class MomentoCore extends DurableObject {
       correction: corr.value || undefined,
       correctionSample: corr.sampleSize,
       recalibrator: this.intelRecalibrator(),
+      rangeProfile: this.setting("range_profile"),
     });
     // evidence gate: attach provenance and stop the label implying skill that
     // the locked holdout has not shown (setting evidence_gate = 0 disables the cap)
@@ -1400,6 +1401,7 @@ export class MomentoCore extends DurableObject {
         correctionSample: corr.sampleSize,
         // walk-forward: fitted only on rows created before this round
         recalibrator: this.intelRecalibrator(),
+        rangeProfile: this.setting("range_profile"),
       });
       // score the raw (uncorrected) point estimate so rectification measures drift, not itself
       const rawF = { ...f, expectedMultiplier: f.baseMultiplier };

@@ -779,7 +779,7 @@ export function pitHistogram(items: { dist: number[]; actual: number }[], bins =
   return { bins: h.map((c, i) => ({ bin: i, count: c, share: r4(c / n) })), n: items.length, chi2: r2(chi2), p: r4(p), uniform: p > 0.05 };
 }
 
-/** Coverage of the p25–p75 range, raw and with ACI (Gibbs & Candès 2021). */
+/** Coverage of the published headline range (target = its nominal share), raw and with ACI (Gibbs & Candès 2021). */
 export function coverageACI(items: { dist: number[]; lo: number; hi: number; actual: number }[], target = 0.5, gamma = 0.01) {
   let rawHits = 0;
   let aciHits = 0;

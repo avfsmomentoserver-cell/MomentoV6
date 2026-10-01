@@ -79,8 +79,28 @@ export interface FitOptions {
   shrink?: number;
 }
 
-/** Quantile levels the forecast publishes (range lo, expected, range hi, reach). */
-export const PUBLISHED_LEVELS = [0.25, 0.5, 0.75, 0.9] as const;
+/**
+ * Quantile levels the forecast publishes. Every range profile below reads from
+ * this set, so the PIT remap is fitted (and held-out tested) on all of them.
+ */
+export const PUBLISHED_LEVELS = [0.05, 0.1, 0.15, 0.25, 0.5, 0.75, 0.85, 0.9, 0.95] as const;
+
+/**
+ * Headline range profiles. The range is a central prediction interval
+ * [lo, hi] of the calibrated distribution; `nominal` = hi − lo is the share of
+ * rounds it is built to contain. "loose" is the default.
+ */
+export type RangeProfileName = "tight" | "loose" | "wide";
+export interface RangeProfile { name: RangeProfileName; lo: number; hi: number; reach: number; nominal: number }
+export const RANGE_PROFILES: Record<RangeProfileName, RangeProfile> = {
+  tight: { name: "tight", lo: 0.25, hi: 0.75, reach: 0.9, nominal: 0.5 },
+  loose: { name: "loose", lo: 0.15, hi: 0.85, reach: 0.95, nominal: 0.7 },
+  wide: { name: "wide", lo: 0.1, hi: 0.9, reach: 0.95, nominal: 0.8 },
+};
+export const DEFAULT_RANGE_PROFILE: RangeProfileName = "loose";
+export function rangeProfile(name?: string | null): RangeProfile {
+  return RANGE_PROFILES[(name ?? "") as RangeProfileName] ?? RANGE_PROFILES[DEFAULT_RANGE_PROFILE];
+}
 
 const GAMMAS = [0, 0.25, 0.5, 0.75, 1];
 const TAUS = [0.6, 0.7, 0.8, 0.9, 1, 1.1, 1.25];
@@ -241,9 +261,9 @@ function quantileError(pits: number[], levels: QuantileLevel[]): number {
   return avg(levels.map((l) => Math.abs(pits.filter((u) => u <= l.mapped).length / pits.length - l.q)));
 }
 
-function coverage(pits: number[], levels: QuantileLevel[]): number {
-  const lo = levels.find((l) => l.q === 0.25)!.mapped;
-  const hi = levels.find((l) => l.q === 0.75)!.mapped;
+function coverage(pits: number[], levels: QuantileLevel[], qLo = 0.25, qHi = 0.75): number {
+  const lo = levels.find((l) => l.q === qLo)?.mapped ?? qLo;
+  const hi = levels.find((l) => l.q === qHi)?.mapped ?? qHi;
   return pits.length ? pits.filter((u) => u >= lo && u <= hi).length / pits.length : 0;
 }
 

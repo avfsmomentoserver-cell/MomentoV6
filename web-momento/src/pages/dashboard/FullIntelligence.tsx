@@ -45,7 +45,11 @@ function EvidencePanel({ ev }: { ev: ForecastEvidence }) {
           <StatTile label="Holdout rounds" value={String(ev.holdoutSample)} sub={`trained on ${ev.trainingSample} earlier`} />
           <StatTile label="Log loss vs baseline" value={`${ll(ev.logLoss.published)} / ${ll(ev.logLoss.baseline)}`} sub={`skill ${pct(ev.baselineSkillPct)}`} />
           <StatTile label="Threshold Brier skill" value={pct(ev.meanBrierSkillPct)} sub="mean over 2×–100×" />
-          <StatTile label="p25–p75 coverage" value={ev.coverage50 == null ? "—" : fmtPct(ev.coverage50, 0)} sub="target 50%" />
+          {ev.rangeCoverage != null && ev.rangeNominal != null ? (
+            <StatTile label={`Range coverage (${ev.rangeProfile ?? "loose"})`} value={fmtPct(ev.rangeCoverage, 0)} sub={`target ${fmtPct(ev.rangeNominal, 0)} · p25–p75 ${ev.coverage50 == null ? "—" : fmtPct(ev.coverage50, 0)}`} />
+          ) : (
+            <StatTile label="p25–p75 coverage" value={ev.coverage50 == null ? "—" : fmtPct(ev.coverage50, 0)} sub="target 50%" />
+          )}
         </div>
         <div className="overflow-x-auto">
           <table className="w-full font-data text-[11px] tabular-nums">
@@ -180,8 +184,14 @@ export default function FullIntelligence() {
                   </span>
                   <p className="font-data text-2xl font-semibold tabular-nums text-primary">{fmtMult(f.expectedMultiplier)}</p>
                   <p className="font-data text-[12px] text-muted-foreground">
-                    p25–p75 {fmtMult(f.rangeLo)} – {fmtMult(f.rangeHi)} · reach p90 {fmtMult(f.moonshotReach)}
+                    {f.rangeProfile?.label ?? "p25–p75"} {fmtMult(f.rangeLo)} – {fmtMult(f.rangeHi)} · reach p{Math.round((f.rangeProfile?.reach ?? 0.9) * 100)} {fmtMult(f.moonshotReach)}
+                    {f.rangeProfile ? ` · holds ~${fmtPct(f.rangeProfile.nominal, 0)} of rounds` : ""}
                   </p>
+                  {f.quantiles ? (
+                    <p className="font-data text-[11px] tabular-nums text-muted-foreground">
+                      p10 {fmtMult(f.quantiles.p10)} · p25 {fmtMult(f.quantiles.p25)} · p50 {fmtMult(f.quantiles.p50)} · p75 {fmtMult(f.quantiles.p75)} · p90 {fmtMult(f.quantiles.p90)} · p95 {fmtMult(f.quantiles.p95)}
+                    </p>
+                  ) : null}
                   <p className="text-[11px] text-muted-foreground">{f.band} band · state conviction {fmtPct(f.stateConviction ?? 0, 0)}</p>
                 </div>
               </div>

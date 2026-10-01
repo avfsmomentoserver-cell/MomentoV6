@@ -456,6 +456,9 @@ export interface ForecastEvidence {
   baselineSkillPct: number | null;
   meanBrierSkillPct: number | null;
   coverage50: number | null;
+  rangeCoverage?: number | null;
+  rangeProfile?: string;
+  rangeNominal?: number;
   thresholds: { threshold: number; predicted: number; observed: number; brierSkillPct: number | null }[];
   confidenceGated: boolean;
   confidenceLabelUngated: "HIGH" | "MEDIUM" | "LOW" | null;
@@ -476,6 +479,10 @@ export interface NextRoundForecast {
   baseMultiplier: number;
   tailLift: number;
   moonshotReach: number;
+  /** headline range profile (default "loose" = p15–p85, ~70% of rounds) */
+  rangeProfile?: { name: "tight" | "loose" | "wide"; lo: number; hi: number; reach: number; nominal: number; label: string };
+  /** exact quantiles of the published distribution */
+  quantiles?: { p05: number; p10: number; p15: number; p25: number; p50: number; p75: number; p85: number; p90: number; p95: number };
   rectification: { active: boolean; factor: number; biasPct: number; sampleSize: number; note: string } | null;
   lastRound: { multiplier: number; band: string };
   components: (ProbabilityComponent & { mid: number })[];

@@ -245,3 +245,31 @@ Live integration (`core.ts`):
 
 Backtest (`npm run predictor:backtest`) now prints a `lockedHoldout` block. On
 the synthetic i.i.d. tape it reports `no-demonstrated-skill`, as it should.
+
+## Robust branch: loose headline range
+
+The headline range is now a **loose** central interval by default:
+
+| Profile (`range_profile` setting) | rangeLo – rangeHi | reach | built to hold |
+|---|---|---|---|
+| `tight` (old behaviour) | p25 – p75 | p90 | 50% of rounds |
+| `loose` (default) | p15 – p85 | p95 | 70% of rounds |
+| `wide` | p10 – p90 | p95 | 80% of rounds |
+
+- `expectedMultiplier` stays the median (p50) under every profile.
+- Every forecast also publishes exact `quantiles` (p05, p10, p15, p25, p50, p75,
+  p85, p90, p95) from the same calibrated distribution, forced monotone, plus a
+  `rangeProfile` block (name, levels, nominal coverage, label such as "p15–p85").
+- The quantile (PIT) recalibration layer now fits and validates all nine
+  levels, so every profile is out-of-sample calibrated, not only p25/p75/p90.
+- Locked-holdout evidence reports `rangeCoverage` against the profile's
+  `rangeNominal` (and still `coverage50` for p25–p75).
+- `GET /api/v1/accuracy/coverage` uses the profile's nominal share as its
+  default ACI target (`?target=` overrides). Ledger rows written before this
+  change carry p25–p75 ranges; `POST /api/v1/intelligence/recalibrate`
+  rebuilds the ledger with the current profile.
+- A wider range lands more rounds, so the ledger hit rate (and the raw
+  confidence score that uses it) rises. That is not added skill; the evidence
+  gate still caps the label at LOW unless the locked holdout shows skill.
+- Backtest: `npm run predictor:backtest -- --profile tight|loose|wide`
+  (`covRange` = share inside the headline range).

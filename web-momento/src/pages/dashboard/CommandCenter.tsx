@@ -269,10 +269,10 @@ export default function CommandCenter() {
                       <p className="mt-0.5 text-[10px] text-muted-foreground transition-all duration-400 ease-out">{nr.band} band</p>
                     </div>
                     <div>
-                      <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Range · p25–p75</p>
+                      <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Range · {nr.rangeProfile?.label ?? "p25–p75"}</p>
                       <p className={cn("font-data mt-0.5 text-sm tabular-nums transition-all duration-400 ease-out", nr.confidence >= 0.66 ? "text-cyan-400" : nr.confidence >= 0.38 ? "text-slate-300" : "text-orange-400")}>{fmtMult(nr.rangeLo)} — {fmtMult(nr.rangeHi)}</p>
                       <p className="mt-0.5 text-[10px] text-muted-foreground transition-all duration-400 ease-out">
-                        moonshot reach (p90) ~{fmtMult(nr.moonshotReach)}
+                        moonshot reach (p{Math.round((nr.rangeProfile?.reach ?? 0.9) * 100)}) ~{fmtMult(nr.moonshotReach)}
                         {nr.intelligence?.calibration && (
                           <span className="ml-2 text-muted-foreground/60">· mode {nr.intelligence.calibration.modeBand}</span>
                         )}

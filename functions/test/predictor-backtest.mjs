@@ -6,7 +6,7 @@
 //
 // Metrics (lower is better unless noted):
 //   logloss   band log-loss of the published distribution
-//   cov50     share of rounds inside p25–p75            (target 0.50)
+//   covRange  share of rounds inside the headline range (target = profile nominal, loose 0.70)
 //   belowExp  share of rounds ≤ expected (true median)   (target 0.50)
 //   pinball   mean quantile loss at 0.25 / 0.5 / 0.75 / 0.9
 //   crashGap  |mean forecast P(<2x) − observed share|
@@ -23,6 +23,7 @@ const scenario = arg("scenario", "iid");
 const scored = Number(arg("scored", 800));
 const warmup = Number(arg("warmup", 1500));
 const seed = Number(arg("seed", 7));
+const profile = arg("profile", "loose");
 const oldPath = arg("old", null);
 const old = oldPath ? await import(new URL(oldPath, `file://${process.cwd()}/`).href) : null;
 const oldEta = oldPath ? await import(new URL(oldPath.replace(/[^/]+$/, "old-v65.mjs"), `file://${process.cwd()}/`).href).catch(() => null) : null;
@@ -40,8 +41,8 @@ for (let i = warmup; i < tape.length; i++) {
   const history = tape.slice(0, i);
   const y = tape[i].multiplier;
   if ((i - warmup) % 10 === 0) rc = fitRecalibrator(samples.slice(-1000));
-  const fc = fullIntelligenceForecast(history, "all", { recalibrator: rc });
-  const fm = fullIntelligenceForecast(history, "all");
+  const fc = fullIntelligenceForecast(history, "all", { recalibrator: rc, rangeProfile: profile });
+  const fm = fullIntelligenceForecast(history, "all", { rangeProfile: profile });
   const out = { main: fm, calibrated: fc };
   if (old) {
     let etaMedian;
@@ -61,7 +62,7 @@ for (let i = warmup; i < tape.length; i++) {
     const dist = f.distribution.map((d) => d.probability);
     methods[k].push({
       ll: -Math.log(Math.max(1e-6, dist[bandOf(y)])),
-      in50: y >= f.rangeLo && y <= f.rangeHi ? 1 : 0,
+      inRange: y >= f.rangeLo && y <= f.rangeHi ? 1 : 0,
       below: y <= f.expectedMultiplier ? 1 : 0,
       pin: (pin(0.25, f.rangeLo, y) + pin(0.5, f.expectedMultiplier, y) + pin(0.75, f.rangeHi, y) + pin(0.9, f.moonshotReach, y)) / 4,
       crash: dist[0] + dist[1],
@@ -76,7 +77,7 @@ const report = {};
 for (const [k, rows] of Object.entries(methods)) {
   report[k] = {
     logloss: +mean(rows.map((r) => r.ll)).toFixed(4),
-    cov50: +mean(rows.map((r) => r.in50)).toFixed(3),
+    covRange: +mean(rows.map((r) => r.inRange)).toFixed(3),
     belowExp: +mean(rows.map((r) => r.below)).toFixed(3),
     pinball: +mean(rows.map((r) => r.pin)).toFixed(4),
     crashGap: +Math.abs(mean(rows.map((r) => r.crash)) - mean(rows.map((r) => r.isCrash))).toFixed(4),
@@ -84,7 +85,7 @@ for (const [k, rows] of Object.entries(methods)) {
 }
 // locked chronological holdout over the resolved raw distributions: does the
 // published forecast beat plain band frequencies on untouched rounds?
-const ev = evaluateLockedHoldout(samples);
+const ev = evaluateLockedHoldout(samples, { rangeProfile: profile });
 const lockedHoldout = {
   status: ev.status,
   trainingSample: ev.trainingSample,
@@ -94,5 +95,7 @@ const lockedHoldout = {
   baselineSkillPct: ev.baselineSkillPct === null ? null : +ev.baselineSkillPct.toFixed(3),
   meanBrierSkillPct: ev.meanBrierSkillPct === null ? null : +ev.meanBrierSkillPct.toFixed(3),
   coverage50: ev.coverage50 === null ? null : +ev.coverage50.toFixed(3),
+  rangeCoverage: ev.rangeCoverage === null ? null : +ev.rangeCoverage.toFixed(3),
+  rangeNominal: ev.rangeNominal,
 };
-console.log(JSON.stringify({ scenario, seed, warmup, scored, lockedHoldout, finalRecalibrator: { active: rc.active, quantileActive: rc.quantileActive, gamma: rc.gamma, tau: rc.tau, reason: rc.reason }, report }, null, 2));
+console.log(JSON.stringify({ scenario, seed, profile, warmup, scored, lockedHoldout, finalRecalibrator: { active: rc.active, quantileActive: rc.quantileActive, gamma: rc.gamma, tau: rc.tau, reason: rc.reason }, report }, null, 2));

@@ -134,3 +134,39 @@ test("forecast survives tiny and degenerate tapes", () => {
   const f = fullIntelligenceForecast(flat, "all");
   assert.ok(Number.isFinite(f.expectedMultiplier));
 });
+
+// ------------------------------------------------------- range profiles
+import { RANGE_PROFILES, rangeProfile, PUBLISHED_LEVELS } from "../.predictor-build/calibration.mjs";
+
+test("range profiles: loose is the default and nests tight ⊂ loose ⊂ wide", () => {
+  assert.equal(rangeProfile(undefined).name, "loose");
+  assert.equal(rangeProfile("nonsense").name, "loose");
+  for (const p of Object.values(RANGE_PROFILES)) {
+    for (const q of [p.lo, p.hi, p.reach]) assert.ok(PUBLISHED_LEVELS.includes(q), `${p.name} level ${q} is fitted`);
+    assert.ok(Math.abs(p.hi - p.lo - p.nominal) < 1e-9);
+    assert.ok(p.reach >= p.hi);
+  }
+  const tape = syntheticTape(2600, { seed: 3 });
+  const f = Object.fromEntries(["tight", "loose", "wide"].map((n) => [n, fullIntelligenceForecast(tape, "all", { rangeProfile: n })]));
+  assert.equal(fullIntelligenceForecast(tape, "all").rangeProfile.name, "loose");
+  assert.ok(f.loose.rangeLo <= f.tight.rangeLo && f.tight.rangeHi <= f.loose.rangeHi);
+  assert.ok(f.wide.rangeLo <= f.loose.rangeLo && f.loose.rangeHi <= f.wide.rangeHi);
+  assert.equal(f.tight.expectedMultiplier, f.loose.expectedMultiplier, "the median does not move with the profile");
+  assert.equal(f.loose.rangeProfile.label, "p15–p85");
+  const qs = Object.values(f.loose.quantiles);
+  for (let i = 1; i < qs.length; i++) assert.ok(qs[i] >= qs[i - 1], "quantiles monotone");
+  assert.equal(f.loose.quantiles.p50, f.loose.expectedMultiplier);
+});
+
+test("loose range holds about 70% of rounds out of sample on a stationary tape", () => {
+  const tape = syntheticTape(2400, { seed: 21 });
+  let inside = 0, n = 0;
+  for (let i = 2000; i < tape.length; i += 2) {
+    const f = fullIntelligenceForecast(tape.slice(0, i), "all");
+    const y = tape[i].multiplier;
+    inside += y >= f.rangeLo && y <= f.rangeHi ? 1 : 0;
+    n++;
+  }
+  const cov = inside / n;
+  assert.ok(cov > 0.6 && cov < 0.8, `loose coverage ${cov.toFixed(3)} on ${n} rounds`);
+});
