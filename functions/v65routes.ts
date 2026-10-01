@@ -1348,10 +1348,11 @@ export async function routeV65(a: CoreAdapter, method: string, path: string, q: 
     const h = num(q.get("h"), 5, 1, 20);
     const r = sql.exec("SELECT * FROM forecast_store ORDER BY id DESC LIMIT 1").toArray()[0] as Rows | undefined;
     const rs = rounds();
-    const dist = r ? parse<number[]>(r.dist, []) : (a.intel(rs, "all") as unknown as IntelLike).distribution.map((d) => d.probability);
+    const intel = a.intel(rs, "all") as unknown as Record<string, unknown>;
+    const dist = r ? parse<number[]>(r.dist, []) : (intel as IntelLike).distribution.map((d) => d.probability);
     const cad = medianIntervalMs(rs);
     const last = rs[rs.length - 1];
-    const eta = etaBoard(rs).rows.filter((x) => x.threshold === 10 || x.threshold === 50);
+    const eta = etaBoard(rs, { intelligence: intel }).rows.filter((x) => x.threshold === 10 || x.threshold === 50);
     // measured visual coverage on resolved stored forecasts
     const res = ledgerRows(a, pickLedger(a, q), 2000);
     const cov = res.length ? res.filter((x) => x.actual >= quantileFromDist(x.dist, 0.25) && x.actual <= quantileFromDist(x.dist, 0.75)).length / res.length : null;
@@ -1363,6 +1364,7 @@ export async function routeV65(a: CoreAdapter, method: string, path: string, q: 
       cone: coneFrom(dist, h).map((c) => ({ ...c, t: (last?.tsMs ?? Date.now()) + c.h * cad })),
       etaMarkers: eta.map((e) => ({ threshold: e.threshold, rounds: e.etaMedian, at: e.etaMedianAt })),
       coverage: { p25p75: cov != null ? r4(cov) : null, belowP90: cov90 != null ? r4(cov90) : null, n: res.length },
+      intelligence: intel,
     });
   }
 

@@ -15,6 +15,7 @@ import { ShapeMiniCard } from "@/components/v64/ShapeViz";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { useV1 } from "@/components/v65/kit";
 
 // V5 state vocabulary, rendered on the v6 pipeline signals.
 const STATE_COLOR: Record<string, string> = {
@@ -78,6 +79,8 @@ export default function CommandCenter() {
     queryFn: () => api.get<Pressure>("/api/v1/mega-pressure"),
     refetchInterval: liveMode ? 15_000 : 30_000,
   });
+  const eta = useV1<{ cadenceMs: number; generatedAt: string; lastTs: string; rows: Array<{ threshold: number; etaMedian: number; etaP90: number; etaMedianAt: string; kmPercentile: number; pressure: number }> }>("eta/board", { refetch: 15_000 });
+  const cone = useV1<{ forecastId: number | null; cadenceMs: number; cone: Array<{ h: number; p25: number; p50: number; p75: number; p90: number; t: number }>; etaMarkers: Array<{ threshold: number; rounds: number; at: string }>; coverage: { p25p75: number | null; belowP90: number | null; n: number }; intelligence?: Record<string, unknown> }>("intelligence/cone?h=5", { refetch: 15_000 });
 
   const stepFeed = useMutation({
     mutationFn: () => api.post<{ generated: number }>("/api/v1/feed/step", { count: 1 }),
@@ -348,6 +351,8 @@ export default function CommandCenter() {
         <StatTile label="P(≥ 2×)" value={fmtPct(a.exceedance.find((e) => e.threshold === 2)?.rate)} sub={`CI ${fmtPct(a.exceedance.find((e) => e.threshold === 2)?.ci[0], 1)}–${fmtPct(a.exceedance.find((e) => e.threshold === 2)?.ci[1], 1)}`} />
         <StatTile label="Tail pressure" value={`${a.pressure.overallPressure}%`} sub={a.pressure.status} tone={a.pressure.overallPressure >= 65 ? "bad" : a.pressure.overallPressure >= 40 ? "warn" : "good"} />
         <StatTile label="Dry streak" value={a.streaks.currentKind === "below" ? `${a.streaks.current}` : "broken"} sub={`max ${a.streaks.maxBelow} · p(contin) ${fmtPct(a.streaks.markov.pStayBelow, 0)}`} tone={a.streaks.currentKind === "below" && a.streaks.current > 6 ? "warn" : "default"} />
+        <StatTile label="ETA 10×" value={eta.data?.rows.find((r) => r.threshold === 10)?.etaMedian ?? "—"} sub={`KM pct ${fmtPct(eta.data?.rows.find((r) => r.threshold === 10)?.kmPercentile)}`} tone="signal" />
+        <StatTile label="Cone coverage" value={fmtPct(cone.data?.coverage.p25p75)} sub={`n=${cone.data?.coverage.n ?? 0}`} tone={Math.abs((cone.data?.coverage.p25p75 ?? 0.5) - 0.5) < 0.05 ? "good" : "warn"} />
       </MetricGrid>
 
       <div className="grid gap-3 xl:grid-cols-3">
