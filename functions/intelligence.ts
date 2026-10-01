@@ -702,6 +702,8 @@ export interface FullIntelligenceForecast {
   };
   /** locked-holdout evidence / provenance, attached by the live core (robust-evaluation.ts) */
   evidence?: ForecastEvidence;
+  /** blend admission summary, attached by the live core (engine-gate.ts) */
+  blendGate?: { mode: string; admitted: string[] | null; excluded: string[]; reason: string };
 }
 
 // ------------------------------------------------------------- main engine

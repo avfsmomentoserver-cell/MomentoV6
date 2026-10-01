@@ -321,3 +321,59 @@ responsive, at the cost of absolute log error, and it sits above the median
 (about 61% of rounds land below it). On the i.i.d. tape the extra movement
 follows noise in the mixture, not information about the next round; the
 locked-holdout evidence still reports no demonstrated skill.
+
+## Forecast tuning settings, Chart Lab precision test and blend gate
+
+### Tuning settings (Master Settings → Forecast tuning)
+
+All values live in the `settings` table, are clamped server-side, and are shown with their effective value (`GET /api/v1/research/forecast-tuning`).
+
+| Key | Default | Range | Effect |
+|---|---|---|---|
+| `point_method` | auto | auto/median/geomean/trimmed | Expected value; auto = earned on resolved rounds |
+| `range_method` | auto | auto/central/shortest | Range construction |
+| `range_profile` | loose | tight/loose/wide | p25–p75 / p15–p85 / p10–p90 |
+| `range_adaptive` | 1 | 0/1 | Allow adaptive coverage (ACI) when earned |
+| `point_range_window` | 600 | 100–3000 | Resolved rounds the methods are compared on |
+| `point_range_min_sample` | 100 | 30–2000 | Below this the median / equal-tailed range are kept |
+| `point_range_se` | 1 | 0–5 | SE margin an alternative must beat the default by |
+| `aci_gamma` | 0.01 | 0.001–0.1 | ACI step size |
+| `aci_max_shift` | 0.15 | 0–0.3 | Max coverage shift from nominal |
+| `blend_gate` | candidates | candidates/all/off | Which engines must earn a place in the blend |
+| `blend_gate_se` | 2 | 0–5 | Required log-loss gain in SE |
+| `blend_gate_window` | 600 | 100–3000 | Ledger rows used by the gate |
+| `blend_gate_min_sample` | 100 | 30–2000 | No admission before this many scored rounds |
+| `chartlab_engine` | 1 | 0/1 | Score Chart Lab as a candidate engine |
+| `chartlab_window`, `chartlab_k` | 30, 40 | 8–120, 5–400 | Chart Lab analogue window / count |
+
+### Chart Lab precision (`functions/analogue.ts`, `GET /api/v1/research/chartlab-precision`)
+
+Chart Lab's own backtest compares its median path with a flat path. That is not like-for-like: on skewed rounds the median of a cumulative sum drifts below the flat path, so a median path can win without any information. The precision test therefore adds a fair baseline (the same median over K random past windows) and a next-round log-loss test against base band frequencies, each with a paired SE. Verdict `more-precise` requires both gains > 1 SE.
+
+Synthetic results (120 walk-forward anchors, W 30, H 20, K 40), from `node test/chartlab-precision.mjs`:
+
+| Tape | Skill vs flat | Skill vs random windows | Next-round gain (log loss) | Verdict |
+|---|---|---|---|---|
+| iid | −6.5% | −3.2% | −0.036 ± 0.026 | not more precise |
+| drift | −3.8% | −3.6% | −0.028 ± 0.022 | not more precise |
+| planted pattern | −1.1% | −2.2% | −0.001 ± 0.026 | not more precise |
+
+On these tapes Chart Lab was not more precise. On real data the same test runs from the Chart Lab page.
+
+### Blend gate (`functions/engine-gate.ts`, `GET /api/v1/research/blend-gate`)
+
+The ledger keeps each engine's −log p at the band that landed plus the weights used. Because the blend is a linear pool, the blend's probability with and without any engine is recomputed exactly per row. An engine is admitted only if the mean gain exceeds `blend_gate_se` SE over the window. Engines that are not admitted are set to shadow: still scored every round, so they can earn their way in, but weight 0. Operator shadow/demote/retire always wins, and the baseline is always kept.
+
+- **Default `candidates`:** only new engines (Chart Lab, custom registry engines) are gated. Built-in engines keep their earned weights.
+- **`all`:** re-tests every engine. In the iid backtest this was worse (log loss 1.5794 vs 1.5758). Testing 8 engines at 1 SE admitted some by chance, and dropping the rest lost diversification. So it is not the default.
+
+Walk-forward backtest (`node test/predictor-backtest.mjs --scored 400`, candidates mode, 2 SE):
+
+| Scenario | Chart Lab gain / SE | Gate | Log loss: dynamic / Chart Lab always on / gated |
+|---|---|---|---|
+| iid | +0.0012 ± 0.0049 | excluded | 1.5758 / 1.5755 / 1.5758 |
+| drift | +0.0075 ± 0.0040 | excluded (1.8 SE) | 1.5284 / 1.5277 / 1.5284 |
+
+The forecast payload carries `blendGate {mode, admitted, excluded, reason}`.
+
+Also fixed: `intelLedger` averaged each engine's loss over all rows, including rows where that engine was not scored. That understated losses for newly added engines and inflated their weights. It now averages per engine.

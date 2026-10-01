@@ -51,6 +51,8 @@ import {
 } from "./pipeline";
 import { fitRecalibrator, rangeProfile, reliabilityTable, sanitizeDist, survivalAt, type CalSample, type Recalibrator } from "./calibration";
 import { defaultSelection, selectPointRange, type PointRangeSelection } from "./point-range";
+import { analogueNextDist, chartLabPrecision } from "./analogue";
+import { blendAdmission, gatedStates, type GateResult } from "./engine-gate";
 import { evaluateLockedHoldout, gateConfidence, summarizeEvidence, unavailableEvidence, type ForecastEvidence, type LockedHoldoutEvidence } from "./robust-evaluation";
 import {
   anchors,
@@ -1209,17 +1211,29 @@ export class MomentoCore extends DurableObject {
       .exec("SELECT comp_loss, COALESCE(cal_loss, mix_loss) AS mix_loss, base_loss, verdict FROM intel_calibrations WHERE resolved_ms IS NOT NULL AND created_ms < ? ORDER BY created_ms DESC LIMIT ?", asOf ?? 9e15, window)
       .toArray() as Rows[];
     const sums: Record<string, number> = {};
+    const counts: Record<string, number> = {};
     let mix = 0, base = 0, hits = 0;
     for (const r of rows) {
-      const cl = r.comp_loss ? (JSON.parse(r.comp_loss as string) as Record<string, number>) : {};
-      for (const [k, v] of Object.entries(cl)) sums[k] = (sums[k] ?? 0) + v;
+      let cl: Record<string, number> = {};
+      try {
+        cl = r.comp_loss ? (JSON.parse(r.comp_loss as string) as Record<string, number>) : {};
+      } catch {
+        /* corrupt row */
+      }
+      for (const [k, v] of Object.entries(cl)) {
+        if (!Number.isFinite(v)) continue;
+        sums[k] = (sums[k] ?? 0) + v;
+        counts[k] = (counts[k] ?? 0) + 1;
+      }
       mix += (r.mix_loss as number) ?? 0;
       base += (r.base_loss as number) ?? 0;
       if (r.verdict === "hit" || r.verdict === "adjacent") hits++;
     }
     const n = rows.length;
     const logLoss: Record<string, number> = {};
-    if (n) for (const [k, v] of Object.entries(sums)) logLoss[k] = v / n;
+    // per-engine mean over the rows that actually scored that engine (an engine
+    // added later must not look better just because it has fewer rows)
+    if (n) for (const [k, v] of Object.entries(sums)) logLoss[k] = v / counts[k];
     const value: IntelWeights = {
       weights: {},
       logLoss,
@@ -1333,6 +1347,101 @@ export class MomentoCore extends DurableObject {
     return this.evidenceCache;
   }
 
+  /** float setting clamped to [lo, hi]; falls back to dflt on missing / invalid */
+  private numSetting(key: string, lo: number, hi: number, dflt: number): number {
+    const raw = this.setting(key);
+    const v = raw === null || raw === undefined || raw === "" ? NaN : Number(raw);
+    return Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt;
+  }
+
+  /** Forecast-tuning settings with their effective (clamped) values. */
+  private forecastTuning() {
+    return {
+      point_method: this.setting("point_method") ?? "auto",
+      range_method: this.setting("range_method") ?? "auto",
+      range_adaptive: this.setting("range_adaptive") !== "0",
+      range_profile: rangeProfile(this.setting("range_profile")).name,
+      point_range_window: this.numSetting("point_range_window", 100, 3000, 600),
+      point_range_min_sample: this.numSetting("point_range_min_sample", 30, 2000, 100),
+      point_range_se: this.numSetting("point_range_se", 0, 5, 1),
+      aci_gamma: this.numSetting("aci_gamma", 0.001, 0.1, 0.01),
+      aci_max_shift: this.numSetting("aci_max_shift", 0, 0.3, 0.15),
+      blend_gate: (["all", "candidates", "off"].includes(this.setting("blend_gate") ?? "") ? this.setting("blend_gate") : "candidates") as "all" | "candidates" | "off",
+      blend_gate_window: this.numSetting("blend_gate_window", 100, 3000, 600),
+      blend_gate_min_sample: this.numSetting("blend_gate_min_sample", 30, 2000, 100),
+      blend_gate_se: this.numSetting("blend_gate_se", 0, 5, 2),
+      chartlab_engine: this.setting("chartlab_engine") !== "0",
+      chartlab_window: Math.round(this.numSetting("chartlab_window", 8, 120, 30)),
+      chartlab_k: Math.round(this.numSetting("chartlab_k", 5, 400, 40)),
+    };
+  }
+
+  /** Chart Lab analogue engine as a candidate next-round expert (see analogue.ts). */
+  private chartLabEngine() {
+    const t = this.forecastTuning();
+    if (!t.chartlab_engine) return [];
+    return [{
+      key: "chartlab",
+      label: "Chart Lab analogues",
+      prior: 0.6,
+      predict: (rounds: Round[]) =>
+        analogueNextDist(rounds.filter((r) => r.origin !== "reconstructed").map((r) => r.multiplier), { window: t.chartlab_window, k: t.chartlab_k }),
+    }];
+  }
+
+  private gateCache: { key: string; value: GateResult | null } | null = null;
+
+  /**
+   * Blend admission (engine-gate.ts): an engine stays in / joins the mixture
+   * only if adding it lowered the mixture's log loss on resolved rounds by more
+   * than blend_gate_se standard errors (default 2). blend_gate = candidates
+   * (default: only new engines such as Chart Lab must earn their place) | all
+   * (every non-baseline engine re-tested) | off.
+   */
+  private intelGate(candidateKeys: string[]): GateResult | null {
+    const t = this.forecastTuning();
+    if (t.blend_gate === "off") return null;
+    const sql = this.ctx.storage.sql;
+    const stamp = sql.exec("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS id FROM intel_calibrations").toArray()[0] as { n: number; id: number };
+    const keys = t.blend_gate === "all" ? [...INTEL_COMPONENTS, ...candidateKeys] : candidateKeys;
+    const key = `${Math.floor(stamp.n / 10)}:${this.asOfMs ?? "live"}:${keys.join(",")}:${t.blend_gate_window}:${t.blend_gate_min_sample}:${t.blend_gate_se}`;
+    if (this.gateCache?.key === key) return this.gateCache.value;
+    let value: GateResult | null = null;
+    try {
+      const rows = sql
+        .exec(
+          "SELECT weights, comp_loss FROM intel_calibrations WHERE resolved_ms IS NOT NULL AND actual IS NOT NULL AND comp_loss IS NOT NULL AND created_ms < ? ORDER BY created_ms DESC LIMIT ?",
+          this.asOfMs ?? 9e15,
+          t.blend_gate_window,
+        )
+        .toArray() as Rows[];
+      const parsed: { weights: Record<string, number>; compLoss: Record<string, number> }[] = [];
+      for (let i = rows.length - 1; i >= 0; i--) {
+        try {
+          parsed.push({ weights: JSON.parse(rows[i].weights as string) ?? {}, compLoss: JSON.parse(rows[i].comp_loss as string) ?? {} });
+        } catch {
+          /* corrupt row */
+        }
+      }
+      value = blendAdmission(parsed, keys, { window: t.blend_gate_window, minSample: t.blend_gate_min_sample, seMultiple: t.blend_gate_se });
+    } catch (e) {
+      console.error("[momento-v6] blend gate failed", e);
+      value = null;
+    }
+    this.gateCache = { key, value };
+    return value;
+  }
+
+  /** Registry states and extra engines after the blend gate. */
+  private gatedRegistry(): { states: Record<string, string>; extras: ReturnType<typeof registry>["extras"]; gate: GateResult | null } {
+    const reg = registry(this.ctx.storage.sql as never);
+    const extras = [...reg.extras, ...this.chartLabEngine()];
+    const candidates = extras.map((e) => e.key);
+    const gate = this.intelGate(candidates);
+    const states = gatedStates(reg.states, gate, INTEL_COMPONENTS as readonly string[], candidates);
+    return { states, extras, gate };
+  }
+
   private pointRangeCache: { key: string; value: PointRangeSelection } | null = null;
 
   /**
@@ -1349,11 +1458,22 @@ export class MomentoCore extends DurableObject {
     const im = this.setting("range_method") ?? "auto";
     const adaptive = this.setting("range_adaptive") !== "0";
     const rc = this.intelRecalibrator();
-    const key = `${Math.floor(stamp.n / 10)}:${this.asOfMs ?? "live"}:${prof.name}:${pm}:${im}:${adaptive}:${rc.active}:${rc.gamma}:${rc.tau}`;
+    const t = this.forecastTuning();
+    const key = `${Math.floor(stamp.n / 10)}:${this.asOfMs ?? "live"}:${prof.name}:${pm}:${im}:${adaptive}:${rc.active}:${rc.gamma}:${rc.tau}:${t.point_range_window}:${t.point_range_min_sample}:${t.point_range_se}:${t.aci_gamma}:${t.aci_max_shift}`;
     if (this.pointRangeCache?.key === key) return this.pointRangeCache.value;
     let value: PointRangeSelection;
     try {
-      value = selectPointRange(this.intelCalSamples(600), rc, { nominal: prof.nominal, pointMethod: pm, intervalMethod: im, adaptive });
+      value = selectPointRange(this.intelCalSamples(t.point_range_window), rc, {
+        nominal: prof.nominal,
+        pointMethod: pm,
+        intervalMethod: im,
+        adaptive,
+        window: t.point_range_window,
+        minSample: t.point_range_min_sample,
+        minSeMultiple: t.point_range_se,
+        gamma: t.aci_gamma,
+        maxShift: t.aci_max_shift,
+      });
     } catch (e) {
       console.error("[momento-v6] point/range selection failed", e);
       value = defaultSelection(prof.nominal, "Point/range selection failed — median and equal-tailed range published.");
@@ -1372,11 +1492,11 @@ export class MomentoCore extends DurableObject {
    */
   private intelForecast(rounds: Round[], source: string): FullIntelligenceForecast {
     const sql = this.ctx.storage.sql;
-    const reg = registry(sql as never);
+    const reg = this.gatedRegistry();
     const head = rounds[rounds.length - 1];
     const stamp = sql.exec("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS id FROM intel_calibrations").toArray()[0] as { n: number; id: number };
     const regKey = JSON.stringify(reg.states) + "|" + reg.extras.map((e) => e.key).join(",");
-    const key = [source, rounds.length, head?.id ?? 0, head?.tsMs ?? 0, head?.multiplier ?? 0, stamp.n, stamp.id, this.asOfMs ?? "live", regKey, this.setting("intel_recalibration") ?? "1", this.setting("range_profile") ?? "loose", this.setting("evidence_gate") ?? "1", this.setting("point_method") ?? "auto", this.setting("range_method") ?? "auto", this.setting("range_adaptive") ?? "1"].join(":");
+    const key = [source, rounds.length, head?.id ?? 0, head?.tsMs ?? 0, head?.multiplier ?? 0, stamp.n, stamp.id, this.asOfMs ?? "live", regKey, this.setting("intel_recalibration") ?? "1", this.setting("range_profile") ?? "loose", this.setting("evidence_gate") ?? "1", this.setting("point_method") ?? "auto", this.setting("range_method") ?? "auto", this.setting("range_adaptive") ?? "1", JSON.stringify(this.forecastTuning())].join(":");
     const hit = this.intelForecastCache.get(key);
     if (hit) return hit;
     const corr = this.intelCorrection();
@@ -1394,7 +1514,16 @@ export class MomentoCore extends DurableObject {
     // evidence gate: attach provenance and stop the label implying skill that
     // the locked holdout has not shown (setting evidence_gate = 0 disables the cap)
     const gated = gateConfidence(raw, this.intelEvidence().value, this.setting("evidence_gate") !== "0");
-    const value: FullIntelligenceForecast = { ...gated.forecast, evidence: gated.evidence };
+    const value: FullIntelligenceForecast = {
+      ...gated.forecast,
+      evidence: gated.evidence,
+      blendGate: {
+        mode: this.forecastTuning().blend_gate,
+        admitted: reg.gate?.admitted ?? null,
+        excluded: reg.gate?.excluded ?? [],
+        reason: reg.gate?.reason ?? "Blend gate off: engines follow the operator registry.",
+      },
+    };
     if (this.intelForecastCache.size >= 8) this.intelForecastCache.delete(this.intelForecastCache.keys().next().value as string);
     this.intelForecastCache.set(key, value);
     return value;
@@ -1416,8 +1545,8 @@ export class MomentoCore extends DurableObject {
     }
     let scored = 0;
     const weights = this.weightsMap();
-    const reg = registry(sql as never);
     for (let i = startIdx; i < all.length; i++) {
+      const reg = this.gatedRegistry(); // cached; refreshes every 10 ledger rows
       const target = all[i];
       if (target.origin === "reconstructed") continue; // fills are context, never scored
       const history = all.slice(0, i);
@@ -2135,6 +2264,29 @@ export class MomentoCore extends DurableObject {
       const samples = this.intelCalSamples(clampInt(this.setting("intel_recalibration_window") ?? "1000", 100, 3000, 1000));
       return ok({ recalibrator: rc, reliability: reliabilityTable(samples, rc), bands: BAND_LABELS, sample: samples.length, evidence: this.intelEvidence().value });
     }
+    if (path === "/api/v1/research/blend-gate" && method === "GET") {
+      // Which engines improve the blend (leave-one-out on the resolved ledger).
+      const reg = this.gatedRegistry();
+      return ok({ mode: this.forecastTuning().blend_gate, gate: reg.gate, states: reg.states });
+    }
+    if (path === "/api/v1/research/chartlab-precision" && method === "GET") {
+      // Walk-forward precision of Chart Lab projections vs a flat path AND vs
+      // the same median over random past windows (fair baseline), plus
+      // next-round log loss vs base band frequencies.
+      const rounds = this.roundsFor(q.get("source"), { includeReconstructed: false });
+      const t = this.forecastTuning();
+      const qn = (name: string) => (q.get(name) ? q.get(name) : NaN); // Number(null) is 0, not missing
+      const res = chartLabPrecision(rounds.map((r) => r.multiplier), {
+        window: clampInt(qn("window"), 8, 120, t.chartlab_window),
+        horizon: clampInt(qn("horizon"), 3, 100, 20),
+        k: clampInt(qn("k"), 5, 400, t.chartlab_k),
+        anchors: clampInt(qn("anchors"), 30, 400, 150),
+      });
+      return ok(res);
+    }
+    if (path === "/api/v1/research/forecast-tuning" && method === "GET") {
+      return ok({ tuning: this.forecastTuning() });
+    }
     if (path === "/api/v1/research/point-range" && method === "GET") {
       // Which point estimator / interval method the headline uses and why,
       // with held-out scores for every candidate.
@@ -2380,6 +2532,7 @@ export class MomentoCore extends DurableObject {
       this.recalibratorCache = null;
       this.pointRangeCache = null;
       this.evidenceCache = null;
+      this.gateCache = null;
       this.intelForecastCache.clear();
       const scored = this.calibrateIntel(this.roundsFor(null));
       return ok({ scored });

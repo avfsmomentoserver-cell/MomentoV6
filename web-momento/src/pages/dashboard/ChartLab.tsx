@@ -14,6 +14,9 @@ import { TvChart } from "@/components/tv/TvChart";
 import { ShapeSketch } from "@/components/v64/ShapeViz";
 import { cn } from "@/lib/utils";
 
+interface Precision { anchors: number; window: number; horizon: number; k: number; maeModel: number; maeFlat: number; skillVsFlat: number; maeRandom: number; skillVsRandom: number; gainVsRandom: number; gainVsRandomSe: number; nextLogLoss: number; nextLogLossBase: number; nextGain: number; nextGainSe: number; verdict: "more-precise" | "not-more-precise" | "insufficient-data"; reason: string }
+interface GateVerdict { key: string; status: string; gain: number; se: number; sample: number; reason: string }
+
 interface Backtest { n: number; window: number; horizon: number; maeModel: number | null; maeBase: number | null; skill: number | null; coverage: number | null; wins: number; rows: { anchorId: number; name: string; skill: number; maeModel: number; maeBase: number; coverage: number }[]; note: string }
 
 const HUE: Record<string, string> = { blue: AV.blue, purple: AV.purple, pink: AV.pink };
@@ -46,6 +49,17 @@ export default function ChartLab() {
     queryFn: () => api.get<Backtest>(`/api/v1/shapes/backtest${qs({ window: win, horizon: hor, n: 40, source: src ?? undefined })}`),
     staleTime: 120_000,
   });
+  const prec = useQuery({
+    queryKey: ["shapes", "precision", win, hor, k, source],
+    queryFn: () => api.get<Precision>(`/api/v1/research/chartlab-precision${qs({ window: win, horizon: hor, k, anchors: 150, source: src ?? undefined })}`),
+    staleTime: 300_000,
+  });
+  const gate = useQuery({
+    queryKey: ["blend-gate"],
+    queryFn: () => api.get<{ mode: string; gate: { verdicts: GateVerdict[]; reason: string } | null }>("/api/v1/research/blend-gate"),
+    staleTime: 60_000,
+  });
+  const clGate = gate.data?.gate?.verdicts.find((v) => v.key === "chartlab");
   const d = p.data;
   const tail = (d?.tail ?? []).map((r) => {
     const t = Math.floor((r.tsMs ?? Date.parse(r.ts)) / 1000);
@@ -125,6 +139,33 @@ export default function ChartLab() {
               </div>
             </Panel>
           </div>
+
+          <Panel
+            title="Precision test — fair baseline"
+            right={prec.data ? (
+              <span className={cn("rounded-md border px-2 py-0.5 text-[11px] font-semibold", prec.data.verdict === "more-precise" ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-300" : prec.data.verdict === "insufficient-data" ? "border-amber-400/40 bg-amber-400/10 text-amber-300" : "border-rose-400/40 bg-rose-400/10 text-rose-300")}>
+                {prec.data.verdict === "more-precise" ? "More precise" : prec.data.verdict === "insufficient-data" ? "Insufficient data" : "Not more precise"}
+              </span>
+            ) : null}
+          >
+            {prec.data ? (
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                  <Metric label="Skill vs flat path" value={pct(prec.data.skillVsFlat)} />
+                  <Metric label="Skill vs random windows" value={pct(prec.data.skillVsRandom)} />
+                  <Metric label="Next-round log loss" value={`${prec.data.nextLogLoss.toFixed(3)} / ${prec.data.nextLogLossBase.toFixed(3)}`} />
+                  <Metric label="Blend gate" value={clGate ? (clGate.status === "admitted" ? "in blend" : clGate.status === "insufficient-data" ? `testing ${clGate.sample}` : "not in blend") : gate.data?.mode === "off" ? "gate off" : "—"} />
+                </div>
+                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                  {prec.data.reason} The flat path is not a like-for-like baseline: the median of skewed rounds drifts below it, so a median path can beat it without information. The fair baseline takes the same median over random past windows. Chart Lab joins the forecast blend only if it lowers the blend's log loss on resolved rounds{clGate ? ` — ${clGate.reason}` : "."}
+                </p>
+              </div>
+            ) : prec.isError ? (
+              <p className="text-[12px] text-muted-foreground">{(prec.error as Error).message}</p>
+            ) : (
+              <p className="flex items-center gap-1.5 text-[12px] text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" /> running walk-forward test…</p>
+            )}
+          </Panel>
 
           <div className="grid gap-3 xl:grid-cols-2">
             <Panel title={`Walk-forward backtest — ${bt.data?.n ?? "…"} past projections`}>

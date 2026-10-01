@@ -14,6 +14,9 @@ import { fitRecalibrator } from "../.predictor-build/calibration.mjs";
 import { fullIntelligenceForecast } from "../.predictor-build/intelligence.mjs";
 import { evaluateLockedHoldout } from "../.predictor-build/robust-evaluation.mjs";
 import { selectPointRange, defaultSelection } from "../.predictor-build/point-range.mjs";
+import { analogueNextDist } from "../.predictor-build/analogue.mjs";
+import { blendAdmission, gatedStates } from "../.predictor-build/engine-gate.mjs";
+import { COMPONENTS } from "../.predictor-build/intelligence.mjs";
 import { syntheticTape } from "./synthetic.mjs";
 
 const arg = (k, d) => {
@@ -29,6 +32,11 @@ const NOMINAL = { tight: 0.5, loose: 0.7, wide: 0.8 }[profile] ?? 0.7;
 const pointArg = arg("point", "auto");
 const rangeArg = arg("range", "auto");
 const adaptiveArg = arg("adaptive", "1") !== "0";
+const gateMode = arg("gate", "candidates"); // all | candidates | off
+const CHARTLAB = { key: "chartlab", label: "Chart Lab analogues", prior: 0.6, predict: (r) => analogueNextDist(r.map((x) => x.multiplier), { window: 30, k: 40 }) };
+const gateRows = [];
+let gate = null;
+let states = {};
 const oldPath = arg("old", null);
 const old = oldPath ? await import(new URL(oldPath, `file://${process.cwd()}/`).href) : null;
 const oldEta = oldPath ? await import(new URL(oldPath.replace(/[^/]+$/, "old-v65.mjs"), `file://${process.cwd()}/`).href).catch(() => null) : null;
@@ -38,7 +46,7 @@ const tape = syntheticTape(warmup + scored, { seed, edge: 0.03, edgeAt });
 const bandOf = (x) => [1.5, 2, 5, 10, 100].filter((e) => x >= e).length;
 const pin = (q, pred, y) => (y >= pred ? q * (y - pred) : (1 - q) * (pred - y));
 
-const methods = { main: [], calibrated: [], dynamic: [], ...(old ? { oldPredictor: [] } : {}) };
+const methods = { main: [], calibrated: [], dynamic: [], allEngines: [], gated: [], ...(old ? { oldPredictor: [] } : {}) };
 let sel = defaultSelection(NOMINAL, "warm-up");
 const samples = [];
 let rc = fitRecalibrator([]);
@@ -49,11 +57,25 @@ for (let i = warmup; i < tape.length; i++) {
   if ((i - warmup) % 10 === 0) {
     rc = fitRecalibrator(samples.slice(-1000));
     sel = selectPointRange(samples.slice(-600), rc, { nominal: NOMINAL, pointMethod: pointArg, intervalMethod: rangeArg, adaptive: adaptiveArg });
+    if (gateMode !== "off") {
+      const keys = gateMode === "all" ? [...COMPONENTS, "chartlab"] : ["chartlab"];
+      gate = blendAdmission(gateRows, keys, { window: 600, minSample: 100, seMultiple: Number(arg("gate-se", 2)) });
+      states = gatedStates({}, gate, COMPONENTS, ["chartlab"]);
+    }
   }
   const fc = fullIntelligenceForecast(history, "all", { recalibrator: rc, rangeProfile: profile });
   const fm = fullIntelligenceForecast(history, "all", { rangeProfile: profile });
   const fd = fullIntelligenceForecast(history, "all", { recalibrator: rc, rangeProfile: profile, pointRange: sel });
-  const out = { main: fm, calibrated: fc, dynamic: fd };
+  // Chart Lab always live (ungated) vs gated blend; the ungated run also feeds
+  // the gate's ledger rows (every engine scored, chartlab at its earned weight)
+  const fa = fullIntelligenceForecast(history, "all", { recalibrator: rc, rangeProfile: profile, pointRange: sel, extraEngines: [CHARTLAB], engineStates: { chartlab: "live" } });
+  const fg = fullIntelligenceForecast(history, "all", { recalibrator: rc, rangeProfile: profile, pointRange: sel, extraEngines: [CHARTLAB], engineStates: states });
+  const bandOfY = bandOf(y);
+  gateRows.push({
+    weights: Object.fromEntries(fg.intelligence.components.map((c) => [c.key, c.weight])),
+    compLoss: Object.fromEntries(fg.intelligence.components.map((c) => [c.key, -Math.log(Math.max(1e-6, c.distribution[bandOfY]))])),
+  });
+  const out = { main: fm, calibrated: fc, dynamic: fd, allEngines: fa, gated: fg };
   if (old) {
     let etaMedian;
     try {
@@ -119,4 +141,4 @@ const lockedHoldout = {
   rangeCoverage: ev.rangeCoverage === null ? null : +ev.rangeCoverage.toFixed(3),
   rangeNominal: ev.rangeNominal,
 };
-console.log(JSON.stringify({ scenario, seed, profile, finalSelection: { point: sel.pointMethod, interval: sel.intervalMethod, coverage: +sel.coverage.toFixed(4), reason: sel.reason }, warmup, scored, lockedHoldout, finalRecalibrator: { active: rc.active, quantileActive: rc.quantileActive, gamma: rc.gamma, tau: rc.tau, reason: rc.reason }, report }, null, 2));
+console.log(JSON.stringify({ scenario, seed, profile, gate: gate ? { admitted: gate.admitted, excluded: gate.excluded, verdicts: gate.verdicts.map((v) => `${v.key}:${v.status}:${v.gain}±${v.se}`) } : null, finalSelection: { point: sel.pointMethod, interval: sel.intervalMethod, coverage: +sel.coverage.toFixed(4), reason: sel.reason }, warmup, scored, lockedHoldout, finalRecalibrator: { active: rc.active, quantileActive: rc.quantileActive, gamma: rc.gamma, tau: rc.tau, reason: rc.reason }, report }, null, 2));

@@ -20,12 +20,43 @@ const SETTING_FIELDS: { key: string; label: string; hint?: string }[] = [
   { key: "autopilot_threshold", label: "Autopilot cashout threshold (×)" },
 ];
 
+type TuningField = { key: string; label: string; hint: string; options?: string[] };
+const TUNING_FIELDS: { group: string; fields: TuningField[] }[] = [
+  {
+    group: "Dynamic forecast method",
+    fields: [
+      { key: "point_method", label: "Expected value", hint: "auto = earned on resolved rounds; or force median / geomean / trimmed", options: ["auto", "median", "geomean", "trimmed"] },
+      { key: "range_method", label: "Range method", hint: "auto, central (equal tails) or shortest log-interval", options: ["auto", "central", "shortest"] },
+      { key: "range_profile", label: "Range profile", hint: "tight p25–p75 · loose p15–p85 · wide p10–p90", options: ["loose", "tight", "wide"] },
+      { key: "range_adaptive", label: "Adaptive coverage", hint: "1 = allow ACI when it earns its place, 0 = fixed level", options: ["1", "0"] },
+      { key: "point_range_window", label: "Evaluation window (rounds)", hint: "Resolved rounds the methods are compared on (100–3000, default 600)" },
+      { key: "point_range_min_sample", label: "Minimum sample", hint: "Below this the median and equal-tailed range are kept (30–2000, default 100)" },
+      { key: "point_range_se", label: "Switch margin (SE)", hint: "An alternative must beat the default by this many standard errors (0–5, default 1)" },
+      { key: "aci_gamma", label: "Adaptive step γ", hint: "How fast coverage reacts to misses (0.001–0.1, default 0.01)" },
+      { key: "aci_max_shift", label: "Adaptive max shift", hint: "Largest coverage move from nominal (0–0.3, default 0.15)" },
+    ],
+  },
+  {
+    group: "Engine blend gate",
+    fields: [
+      { key: "blend_gate", label: "Gate mode", hint: "candidates = new engines (Chart Lab, custom) must improve the blend · all = re-test every engine · off", options: ["candidates", "all", "off"] },
+      { key: "blend_gate_se", label: "Admission margin (SE)", hint: "Required log-loss gain in standard errors (0–5, default 2)" },
+      { key: "blend_gate_window", label: "Gate window (rounds)", hint: "Resolved rounds used (100–3000, default 600)" },
+      { key: "blend_gate_min_sample", label: "Gate minimum sample", hint: "Engines are not admitted before this many scored rounds (default 100)" },
+      { key: "chartlab_engine", label: "Chart Lab engine", hint: "1 = score Chart Lab as a candidate engine, 0 = off", options: ["1", "0"] },
+      { key: "chartlab_window", label: "Chart Lab window", hint: "Rounds per matched shape (8–120, default 30)" },
+      { key: "chartlab_k", label: "Chart Lab analogues", hint: "Nearest windows used (5–400, default 40)" },
+    ],
+  },
+];
+
 export default function Settings() {
   const qc = useQueryClient();
   const { user, isOperator, logout } = useAuth();
   const [values, setValues] = useState<Record<string, string>>({});
 
   const settings = useQuery({ queryKey: ["settings"], queryFn: () => api.get<{ settings: Record<string, string> }>("/api/v1/settings") });
+  const tuning = useQuery({ queryKey: ["forecast-tuning"], queryFn: () => api.get<{ tuning: Record<string, string | number | boolean> }>("/api/v1/research/forecast-tuning") });
   const audit = useQuery({
     queryKey: ["audit"],
     queryFn: () => api.get<{ log: AuditRow[] }>("/api/v1/audit?limit=30"),
@@ -42,6 +73,7 @@ export default function Settings() {
     onSuccess: () => {
       toast.success("Settings persisted to the database");
       qc.invalidateQueries({ queryKey: ["settings"] });
+      qc.invalidateQueries({ queryKey: ["forecast-tuning"] });
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -132,6 +164,43 @@ export default function Settings() {
           </Panel>
         </div>
       </div>
+
+      <Panel title="Forecast tuning">
+        <div className="grid gap-5 lg:grid-cols-2">
+          {TUNING_FIELDS.map((g) => (
+            <div key={g.group} className="space-y-3">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{g.group}</p>
+              {g.fields.map((f) => {
+                const eff = tuning.data?.tuning?.[f.key];
+                return (
+                  <div key={f.key} className="space-y-1">
+                    <Label htmlFor={f.key} className="text-[13px]">{f.label}</Label>
+                    <div className="flex items-center gap-2">
+                      {f.options ? (
+                        <select
+                          id={f.key}
+                          value={values[f.key] ?? f.options[0]}
+                          onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+                          className="h-9 w-44 rounded-md border border-input bg-background px-2 font-data text-[13px]"
+                        >
+                          {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
+                        </select>
+                      ) : (
+                        <Input id={f.key} value={values[f.key] ?? ""} placeholder="default" onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))} className="w-44 font-data" />
+                      )}
+                      {eff !== undefined && <span className="font-data text-[11px] text-muted-foreground">in use: {String(eff)}</span>}
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">{f.hint}</p>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+        <Button className="mt-4 gap-2" onClick={() => save.mutate()} disabled={save.isPending}>
+          <Download className="h-4 w-4" /> Save tuning
+        </Button>
+      </Panel>
 
       {isOperator && (
         <Panel title="Activity log (server-side audit trail)">

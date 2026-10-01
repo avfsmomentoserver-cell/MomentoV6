@@ -123,6 +123,8 @@ export interface SelectOptions {
   minSample?: number;
   /** ACI step size */
   gamma?: number;
+  /** maximum ACI shift of the coverage level from nominal */
+  maxShift?: number;
   /** required margin over the default, in standard errors */
   minSeMultiple?: number;
 }
@@ -209,6 +211,7 @@ export function selectPointRange(input: readonly CalSample[], rc: Pick<Recalibra
   // costing more than one SE of interval score versus the fixed level.
   const allowAdaptive = opts.adaptive !== false;
   const gamma = opts.gamma ?? 0.01;
+  const maxShift = Math.min(0.3, Math.max(0, opts.maxShift ?? 0.15));
   let level = nominal;
   let hitsA = 0, hitsF = 0;
   const scoreA: number[] = [], scoreF: number[] = [];
@@ -221,7 +224,7 @@ export function selectPointRange(input: readonly CalSample[], rc: Pick<Recalibra
     scoreA.push(intervalScore(la, ha, r.actual, nominal));
     scoreF.push(intervalScore(lf, hf, r.actual, nominal));
     // miss → widen, hit → narrow; long-run hit rate → nominal
-    level = Math.min(nominal + 0.15, Math.max(nominal - 0.15, level + gamma * (nominal - inA)));
+    level = Math.min(Math.min(0.97, nominal + maxShift), Math.max(Math.max(0.05, nominal - maxShift), level + gamma * (nominal - inA)));
   }
   const covErrA = Math.abs(hitsA / rows.length - nominal);
   const covErrF = Math.abs(hitsF / rows.length - nominal);
