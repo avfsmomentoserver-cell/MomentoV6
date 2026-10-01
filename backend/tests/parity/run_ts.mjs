@@ -16,7 +16,10 @@ for (const c of req.calls) {
   try {
     let fn = mod;
     for (const part of c.fn.split(".")) fn = fn[part];
-    const r = typeof fn === "function" ? fn(...(c.args ?? []).map(fix)) : fn;
+    let r = typeof fn === "function" ? fn(...(c.args ?? []).map(fix)) : fn;
+    if (r && typeof r.then === "function") r = await r;
+    if (r instanceof Uint8Array) r = [...r];
+    if (r && r.active && Array.isArray(r.active)) r = { ...r, active: r.active.map((a) => [...a]) };
     out.push({ ok: true, value: r === undefined ? null : r });
   } catch (e) {
     out.push({ ok: false, error: String(e && e.message || e) });
