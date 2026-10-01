@@ -653,6 +653,7 @@ export interface IntelligenceBlock {
     linguisticsTilt: number;
     tailLiftTrajectory: number;
     momentumSpeed: number;
+    outcomeBias: number;
     finalScale: number;
   };
   /** collapse, ascend, and resistance forecast data */

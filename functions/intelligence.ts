@@ -723,6 +723,17 @@ export interface FullIntelligenceForecast {
       anchorPhase: "forming" | "released" | "idle";
       anchorPotential: number | null;
     };
+    /** comprehensive range adjustment layer */
+    rangeAdjustments: {
+      regimeScale: number;
+      breakoutScale: number;
+      trendShift: number;
+      dnaPatternTilt: number;
+      tailLiftTrajectory: number;
+      momentumSpeed: number;
+      outcomeBias: number;
+      finalScale: number;
+    };
   };
   /** locked-holdout evidence / provenance, attached by the live core (robust-evaluation.ts) */
   evidence?: ForecastEvidence;
@@ -1110,13 +1121,27 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
   );
   const agreement = clamp(1 - COMPONENTS.reduce((a, c) => a + weights[c] * jsDivergence(dists[c], mixture), 0) / Math.log(2) * 4);
 
+  // ---------- outcome bias: weight distribution toward more lows, fewer highs
+  // Real crash game outcomes are heavily skewed toward low multipliers (1x-2x range)
+  // with very few high multipliers (10x+). Apply a log-space bias to match this.
+  const biasedMixture = (() => {
+    const bias = new Array(NB).fill(0).map((_, i) => {
+      const x = BAND_EDGES[0] * Math.pow(BAND_EDGES[BAND_EDGES.length - 1] / BAND_EDGES[0], i / (NB - 1));
+      // Log-space bias: suppress high multipliers, boost low multipliers
+      // Bias factor = 1.0 at 1x, decreases smoothly for higher multipliers
+      const logBias = 1 - Math.log10(Math.max(1, x)) * 0.3; // -0.3 per decade
+      return Math.max(0.3, Math.min(1.5, logBias)); // Clamp to [0.3, 1.5]
+    });
+    return normalize(mixture.map((p, i) => p * bias[i]));
+  })();
+
   // ---------- headline from ONE calibrated distribution
   // Every published number (expected, headline range, reach, band, horizon
   // probabilities) is read off the same distribution, so they can never
   // contradict each other. The recalibrator only changes anything when it has
   // beaten the raw mixture on held-out rounds (calibration.ts).
   const rc = opts.recalibrator ?? identityRecalibrator("No recalibrator supplied.");
-  const calibrated = rc.active ? applyDistribution(mixture, rc) : mixture;
+  const calibrated = rc.active ? applyDistribution(biasedMixture, rc) : biasedMixture;
   const prof = rangeProfile(opts.rangeProfile);
   const lvl = {
     rangeLo: mapLevel(rc, prof.lo),
@@ -1127,7 +1152,7 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
   // legacy median log-bias rectification: only while no recalibration layer is
   // earned (otherwise the median would be corrected twice).
   const corr = rc.active || rc.quantileActive ? 0 : opts.correction ?? 0;
-  const factor = corr ? clamp(Math.exp(corr), 0.5, 2) : 1;
+  const factor = corr ? clamp(Math.exp(corr), 0.1, 10) : 1;
   const expectedRaw = quantileOf(mixture, 0.5);
   const qExpected = quantileOf(calibrated, lvl.expected);
   const qLo = quantileOf(calibrated, lvl.rangeLo);
@@ -1167,6 +1192,7 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
     dnaPatternTilt: number;
     tailLiftTrajectory: number;
     momentumSpeed: number;
+    outcomeBias: number;
     finalScale: number;
   } = {
     regimeScale: 1,
@@ -1175,6 +1201,7 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
     dnaPatternTilt: 0,
     tailLiftTrajectory: 0,
     momentumSpeed: 0,
+    outcomeBias: 0,
     finalScale: 1,
   };
 
@@ -1243,8 +1270,13 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
     rangeAdjustments.momentumSpeed = momentumSpeed;
   }
 
-  // Clamp final range scale
-  rangeScale = clamp(rangeScale, 0.5, 2.0);
+  // Outcome bias adjustment - track the log-space bias applied to distribution
+  // This represents the skew toward low multipliers (1x-2x) vs high multipliers (10x+)
+  const outcomeBias = -0.3; // -0.3 per decade in log space
+  rangeAdjustments.outcomeBias = outcomeBias;
+
+  // Clamp final range scale - allow wider range for full forecast capabilities
+  rangeScale = clamp(rangeScale, 0.1, 10.0);
   rangeAdjustments.finalScale = rangeScale;
 
   // Apply trend shift
@@ -1479,6 +1511,7 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
         reason: rc.reason,
       },
       collapseAscendResistance,
+      rangeAdjustments,
     },
   };
 }
