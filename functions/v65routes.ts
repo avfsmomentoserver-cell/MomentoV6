@@ -1475,7 +1475,11 @@ export async function routeV65(a: CoreAdapter, method: string, path: string, q: 
   }
 
   // ---- F-26 / F-27 / F-29 survival
-  if (p === "eta/board" && method === "GET") return ok(etaBoard(rounds()));
+  if (p === "eta/board" && method === "GET") {
+    const rs = rounds();
+    const intel = a.intel(rs, "all") as unknown as Record<string, unknown>;
+    return ok(etaBoard(rs, { intelligence: intel }));
+  }
   if (p === "eta/hazard" && method === "GET") return ok(hazardTimeline(rounds(), num(q.get("T"), 10, 1.01, 1000), num(q.get("maxG"), 120, 10, 2000)));
   if (p === "eta/inround" && method === "GET") return ok(inRoundEta(rounds(), num(q.get("m0"), 1, 1, 10000)));
 

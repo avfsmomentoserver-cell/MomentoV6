@@ -567,11 +567,12 @@ function constHazardLL(train: number[], test: number[]): number {
   return test.reduce((a, g) => a + Math.log(p) + g * Math.log(1 - p), 0);
 }
 
-export function etaBoard(rounds: Round[], opts: { cadenceMs?: number; thresholds?: readonly number[] } = {}) {
+export function etaBoard(rounds: Round[], opts: { cadenceMs?: number; thresholds?: readonly number[]; intelligence?: Record<string, unknown> } = {}) {
   const obs = rounds.filter((r) => r.origin !== "reconstructed");
   const ms = obs.map((r) => r.multiplier);
   const cadence = opts.cadenceMs ?? medianIntervalMs(obs);
   const now = obs.length ? obs[obs.length - 1].tsMs : Date.now();
+  const intel = opts.intelligence ?? {};
   const rows = (opts.thresholds ?? ETA_THRESHOLDS).map((T) => {
     const { gaps, current } = gapsBetween(ms, T);
     const nEv = gaps.length;
@@ -660,9 +661,10 @@ export function etaBoard(rounds: Round[], opts: { cadenceMs?: number; thresholds
         b1lo <= 0 && b1hi >= 0
           ? `Gap hazard is flat (β₁ CI spans 0): being "overdue" carries no information for ${T}×.`
           : `Hazard ${fit.b1 > 0 ? "rises" : "falls"} with gap length for ${T}× (β₁ ${r3(fit.b1)}); ${beats ? "the hazard model beats KM on held-out gaps" : "but it does not beat KM out of sample, so KM is shown"}.`,
+      intelligence: intel,
     };
   });
-  return { cadenceMs: Math.round(cadence), generatedAt: new Date().toISOString(), lastTs: obs.length ? obs[obs.length - 1].ts : null, rows };
+  return { cadenceMs: Math.round(cadence), generatedAt: new Date().toISOString(), lastTs: obs.length ? obs[obs.length - 1].ts : null, rows, intelligence: intel };
 }
 
 /** F-27 hazard timeline: per-round conditional hazard h_T(g) with unconditional reference. */
