@@ -182,7 +182,14 @@ class Core:
             v65routes.init_v65_schema(self.sql)
             if bootstrap:
                 self.bootstrap(calibrate=calibrate_on_boot)
-            self.booted = True
+
+        # P6: register momento_core experts as shadow candidate engines.
+        # Done after bootstrap so rounds_for() works and schema exists.
+        try:
+            from momento.candidates import register_candidates
+            register_candidates(self)
+        except Exception as e:  # pragma: no cover — candidates must never break boot
+            log.error("candidate registration failed: %s", e)
 
     # ------------------------------------------------------------ bootstrap
     def bootstrap(self, calibrate: bool = True) -> None:
@@ -456,6 +463,12 @@ class Core:
                     fn(source, inserted, origin)
                 except Exception as e:  # pragma: no cover
                     log.error("ingest listener: %s", e)
+            # P7: push to WebSocket /live clients (fire-and-forget)
+            try:
+                from app.main import live_push
+                live_push(self, "round", {"source": source, "inserted": inserted, "origin": origin})
+            except Exception:
+                pass  # never block on push failures
         return {"inserted": inserted, "rejected": rejected}
 
     def extend_sessions(self, source: str, srt: list[dict]) -> None:

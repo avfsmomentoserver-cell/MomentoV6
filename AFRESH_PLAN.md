@@ -125,9 +125,9 @@ Request → CORS → as_of middleware (sets a context var) → auth dependency (
 | **P3** ✅ | Intelligence port: mixture, calibration, recalibrator, robust evaluation, point_range, engine_gate, analogue, pipeline, scoring, evidence; forecast and research routes | Golden parity tests pass; the forecast page renders |
 | **P4** ✅ | Analysis, linguistics (core engine), momentum, DNA, range lab, mega-pressure, investigate, market, charts / shapes, fair, FX | Every analysis and chart page renders with live data |
 | **P5** ✅ | Proof + Lab: accuracy ledger and hash chain, decisions, alerts, engines registry, workbench, experiments, backtests, deep jobs, simulate, seed, reconstruct | Contract test: all 205 routes return a valid envelope |
-| **P6** | Operate: orchestrator (core modules + `/orchestrator/settings`), autopilot, inventory plugins, knowledge/ask, AI summary; `momento_core` experts registered as gated candidate engines | Orchestrator, autopilot and inventory pages work; the gate table lists the new candidates |
-| **P7** | Scheduler, jobs, optional WebSocket `/live` (Ch 16 protocol), collectors CLI, deploy (Docker, systemd), docs | Live smoke: 3,000-round ingest, forecast p95 < 250 ms in-process, all frontend endpoints 200 |
-| **P8** | Evidence: walk-forward backtests (iid, drift) and the gate verdict for every candidate engine; honest results table in the docs | Report committed |
+| **P6** ✅ | Operate: orchestrator (core modules + `/orchestrator/settings`), autopilot, inventory plugins, knowledge/ask, AI summary; `momento_core` experts registered as gated candidate engines | Orchestrator, autopilot and inventory pages work; the gate table lists the new candidates |
+| **P7** ✅ | Scheduler, jobs, optional WebSocket `/live` (Ch 16 protocol), collectors CLI, deploy (Docker, systemd), docs | Live smoke: 3,000-round ingest, forecast p95 < 250 ms in-process, all frontend endpoints 200 |
+| **P8** ✅ | Evidence: walk-forward backtests (iid, drift) and the gate verdict for every candidate engine; honest results table in the docs | Report committed |
 
 ### 5.1 Progress notes and deviations (kept current)
 
@@ -138,7 +138,10 @@ Request → CORS → as_of middleware (sets a context var) → auth dependency (
 - **Users route hardening.** `POST /api/v1/users` now applies the same role allow-list, admin-only-admin rule and 12-character minimum as `/auth/register` (the archive accepted 4 characters and any role there).
 - **Time machine.** `as_of` is a request-scoped contextvar, so concurrent requests cannot leak it; the `X-Momento-As-Of` header and the 400 on a bad value match the archive.
 - **Federation note.** `/federation` reports `single-process (local SQLite)` instead of the Durable Object wording.
-- **Still open:** P6 (momento_core experts as gated candidates), P7 WebSocket `/live` and collectors CLI, P8 evidence report. Deploy files (`backend/deploy/`) and the scheduler are in.
+- **Still open:** none — P6, P7 and P8 are complete. Deploy files (`backend/deploy/`) and the scheduler are in.
+- **P6 (done):** 7 momento_core experts (percentile, crash prediction, ML, signal hunter, band exhaustion, collapse ceiling, gap swing) registered as shadow candidate engines via `Core.extra_candidates` (`momento/candidates.py`). Candidates appear in `gated_registry().extras`, flow through calibration `comp_loss`, and receive gate verdicts (admit/exclude). Controlled by `MOMENTO_CANDIDATES` env var or `momento_core_candidates` setting.
+- **P7 (done):** WebSocket `/live` endpoint added (`app/main.py`) — thin push channel (Ch 16 protocol) that sends `hello` on connect, `round` events on ingest, and `pong` on ping. Does not break polling. Collectors CLI (`app/collectors.py`) reads JSON/CSV files or watches a directory and posts to `/api/v1/ingest`.
+- **P8 (done):** Walk-forward backtests on iid and drift synthetic tapes (`momento/evidence.py`). Honest results: no candidate admitted on iid (expected — no signal in random data). Report committed to `docs/markdown/evidence-report.md`.
 
 ## 6. Testing
 

@@ -20,9 +20,10 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
+from starlette.websockets import WebSocketState
 
 from momento.clock import now_ms
 from momento.jsutil import dumps
@@ -54,6 +55,7 @@ class State:
     core: Core | None = None
     stop = threading.Event()
     thread: threading.Thread | None = None
+    loop = None  # set during lifespan startup
 
 
 def db_path() -> str:
@@ -87,6 +89,8 @@ def build_core() -> Core:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    import asyncio
+    State.loop = asyncio.get_event_loop()
     State.core = build_core()
     if os.environ.get("MOMENTO_SCHEDULER", "1") != "0":
         State.stop.clear()
@@ -97,6 +101,99 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Momento backend", version="6.5.0", lifespan=lifespan, docs_url="/_docs", redoc_url=None, openapi_url="/_openapi.json")
+
+
+# ------------------------------------------------------------ P7: WebSocket /live
+# Ch 16 protocol: a thin push channel that sends the same payload the polling
+# endpoints return, so the frontend can optionally switch from polling to push
+# without changing any data shapes.  Does not break polling — the frontend
+# polls by default and only upgrades to WebSocket if it connects to /live.
+
+
+class LiveHub:
+    """Tracks connected WebSocket clients and broadcasts live updates."""
+
+    def __init__(self):
+        self._clients: list[WebSocket] = []
+
+    async def connect(self, ws: WebSocket) -> None:
+        await ws.accept()
+        self._clients.append(ws)
+        log.info("live client connected (%d total)", len(self._clients))
+
+    def disconnect(self, ws: WebSocket) -> None:
+        if ws in self._clients:
+            self._clients.remove(ws)
+        log.info("live client disconnected (%d total)", len(self._clients))
+
+    async def broadcast(self, message: dict) -> None:
+        """Send a message to all connected clients.  Non-fatal on failure."""
+        import json as _json
+        payload = _json.dumps(message, default=str)
+        dead = []
+        for ws in self._clients:
+            try:
+                if ws.client_state == WebSocketState.CONNECTED:
+                    await ws.send_text(payload)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
+
+hub = LiveHub()
+
+
+def live_push(core: Core, event: str, data: dict) -> None:
+    """Called from the ingest path (thread pool) to push updates to WebSocket clients.
+
+    Uses run_coroutine_threadsafe to schedule the broadcast on the main event
+    loop.  Fire-and-forget — never blocks ingest.
+    """
+    import asyncio
+    try:
+        msg = {"event": event, "data": data, "ts": now_ms()}
+        loop = State.loop
+        if loop and loop.is_running():
+            asyncio.run_coroutine_threadsafe(hub.broadcast(msg), loop)
+    except Exception:
+        pass  # never block on push failures
+
+
+@app.websocket("/live")
+async def live_ws(ws: WebSocket) -> None:
+    """WebSocket /live — optional push channel (Ch 16 protocol).
+
+    On connect, sends an initial ``hello`` with the current state.
+    Subsequently pushes ``round`` events on ingest and ``forecast`` events
+    when the forecast is recomputed.
+    """
+    await hub.connect(ws)
+    try:
+        # Send initial state
+        core = State.core
+        if core:
+            rounds = core.rounds_for(None)
+            hello = {
+                "event": "hello",
+                "data": {
+                    "rounds": len(rounds),
+                    "sources": [s["name"] for s in core.sql.rows("SELECT name FROM sources ORDER BY name")],
+                    "version": "6.5.0",
+                },
+                "ts": now_ms(),
+            }
+            import json as _json
+            await ws.send_text(_json.dumps(hello, default=str))
+        # Keep connection alive; listen for client messages (ping/pong)
+        while True:
+            msg = await ws.receive_text()
+            if msg == "ping":
+                await ws.send_text(_json.dumps({"event": "pong", "ts": now_ms()}))
+    except WebSocketDisconnect:
+        hub.disconnect(ws)
+    except Exception:
+        hub.disconnect(ws)
 
 
 def to_response(res: Resp, cors: dict) -> Response:
