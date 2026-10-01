@@ -225,17 +225,43 @@ export default function CommandCenter() {
                         rectified {nr.rectification.factor.toFixed(2)}×
                       </span>
                     )}
+                    {nr.intelligence?.bandContext && (
+                      <>
+                        <span className="rounded-md border border-cyan-400/30 bg-cyan-400/5 px-2 py-0.5 text-[10px] text-cyan-300" title={`Tail lift: ${nr.intelligence.bandContext.tailLift.toFixed(2)}`}>
+                          tail: {nr.intelligence.bandContext.tailLift > 0.5 ? "+" : ""}{Math.round((nr.intelligence.bandContext.tailLift - 0.5) * 100)}%
+                        </span>
+                        <span className="rounded-md border border-orange-400/30 bg-orange-400/5 px-2 py-0.5 text-[10px] text-orange-300" title={`State bias: ${nr.intelligence.bandContext.stateBias.toFixed(2)}`}>
+                          state: {nr.state}
+                        </span>
+                        <span className="rounded-md border border-purple-400/30 bg-purple-400/5 px-2 py-0.5 text-[10px] text-purple-300" title={`Confidence weight: ${nr.intelligence.bandContext.confidenceWeight.toFixed(2)}`}>
+                          conf: {nr.confidence.toFixed(2)}
+                        </span>
+                      </>
+                    )}
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Expected</p>
-                      <p className="font-data mt-0.5 text-xl font-semibold tabular-nums text-primary">{fmtMult(nr.expectedMultiplier)}</p>
-                      <p className="mt-0.5 text-[10px] text-muted-foreground">{nr.band} band</p>
+                      <p className="font-data mt-0.5 text-xl font-semibold tabular-nums text-primary transition-all duration-400 ease-out">{fmtMult(nr.expectedMultiplier)}</p>
+                      <p className="mt-0.5 text-[10px] text-muted-foreground transition-all duration-400 ease-out">{nr.band} band</p>
                     </div>
                     <div>
                       <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Range · p25–p75</p>
-                      <p className="font-data mt-0.5 text-sm tabular-nums">{fmtMult(nr.rangeLo)} — {fmtMult(nr.rangeHi)}</p>
-                      <p className="mt-0.5 text-[10px] text-muted-foreground">moonshot reach (p90) ~{fmtMult(nr.moonshotReach)}</p>
+                      <p className={cn("font-data mt-0.5 text-sm tabular-nums transition-all duration-400 ease-out", nr.confidence >= 0.66 ? "text-cyan-400" : nr.confidence >= 0.38 ? "text-slate-300" : "text-orange-400")}>{fmtMult(nr.rangeLo)} — {fmtMult(nr.rangeHi)}</p>
+                      <p className="mt-0.5 text-[10px] text-muted-foreground transition-all duration-400 ease-out">
+                        moonshot reach (p90) ~{fmtMult(nr.moonshotReach)}
+                        {nr.intelligence?.rangeScale && (
+                          <span className="ml-2 text-muted-foreground/60">· scale ×{nr.intelligence.rangeScale.toFixed(2)}</span>
+                        )}
+                      </p>
+                      {nr.intelligence?.rangeScale && (
+                        <div className="mt-1 h-1 w-full max-w-[80px] rounded-full bg-border overflow-hidden">
+                          <div
+                            className={cn("h-full transition-all duration-400 ease-out", nr.intelligence.rangeScale > 1 ? "bg-orange-400" : "bg-cyan-400")}
+                            style={{ width: `${Math.min(100, nr.intelligence.rangeScale * 50)}%` }}
+                          />
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div>
@@ -245,7 +271,7 @@ export default function CommandCenter() {
                         <div key={d.label} className="flex h-full min-w-0 flex-1 flex-col items-center gap-0.5" title={`${d.label}: ${fmtPct(d.probability, 1)}`}>
                           <div className="flex w-full flex-1 items-end">
                             <div
-                              className="w-full rounded-t-sm"
+                              className="w-full rounded-t-sm transition-all duration-400 ease-out"
                               style={{
                                 height: `${Math.max(4, (d.probability / Math.max(...nr.distribution.map((x) => x.probability), 0.0001)) * 100)}%`,
                                 background: d.edge >= 10 ? "#F59E0B" : d.edge >= 5 ? "#8B5CF6" : d.edge >= 2 ? "#06B6D4" : "#3B82F6",
@@ -294,23 +320,36 @@ export default function CommandCenter() {
                   <p className="text-[11px] leading-relaxed text-muted-foreground">{nr.note}</p>
                   <div className="flex flex-wrap gap-1.5 border-t border-border/50 pt-2.5">
                     {nr.components.map((c) => (
-                      <span
+                      <div
                         key={c.model}
+                        className={cn(
+                          "font-data rounded-md border px-2 py-0.5 text-[11px] transition-all duration-400 ease-out",
+                          c.weight > 0.15 ? "border-primary/40 bg-primary/10 text-primary" : "border-border/70 bg-background/40 text-muted-foreground"
+                        )}
                         title={nr.intelligence ? `earned weight ${fmtPct(c.weight, 1)} · P(≥2×) ${fmtPct(c.p, 1)}` : undefined}
-                        className="font-data rounded-md border border-border/70 bg-background/40 px-2 py-0.5 text-[11px] text-muted-foreground"
                       >
-                        {c.model} {c.mid.toFixed(2)}
-                        {nr.intelligence && <span className="ml-1 text-muted-foreground/60">·{Math.round(c.weight * 100)}%</span>}
-                      </span>
+                        <div className="flex items-center gap-1">
+                          <span>{c.model} {c.mid.toFixed(2)}</span>
+                          {nr.intelligence && <span className="text-muted-foreground/60">·{Math.round(c.weight * 100)}%</span>}
+                        </div>
+                        {nr.intelligence && (
+                          <div className="mt-0.5 h-0.5 w-full max-w-[40px] rounded-full bg-border overflow-hidden">
+                            <div
+                              className="h-full bg-current transition-all duration-400 ease-out"
+                              style={{ width: `${Math.min(100, c.weight * 100)}%` }}
+                            />
+                          </div>
+                        )}
+                      </div>
                     ))}
-                    <span className="font-data rounded-md border border-primary/30 bg-primary/5 px-2 py-0.5 text-[11px] text-primary/80">
+                    <span className="font-data rounded-md border border-primary/30 bg-primary/5 px-2 py-0.5 text-[11px] text-primary/80 transition-all duration-400 ease-out">
                       {nr.intelligence ? "mixture" : "ensemble"} {nr.expectedMultiplier.toFixed(2)}
                     </span>
                     {nr.intelligence && (
                       <span
                         title={nr.intelligence.honesty}
                         className={cn(
-                          "font-data rounded-md border px-2 py-0.5 text-[11px]",
+                          "font-data rounded-md border px-2 py-0.5 text-[11px] transition-all duration-400 ease-out",
                           (nr.intelligence.skillPct ?? 0) > 0 ? "border-emerald-400/40 text-emerald-300" : "border-border/70 text-muted-foreground",
                         )}
                       >

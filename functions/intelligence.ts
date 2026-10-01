@@ -1067,7 +1067,54 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
   }
   const mid = (c: ComponentKey) => compOut.find((x) => x.key === c)!.mid;
 
-  const bandLabel = BAND_LABELS[bandIndex(expected)];
+  // ---------- Dynamic confidence-based adjustments
+
+  // A. Aggressive confidence-weighted range scaling
+  const rangeScale = 1.0 + (0.5 - confidence) * 0.6;
+  const tailAdjust = 1.0 + (v6band.tailLift - 0.5) * 0.3;
+  const exhaustionAdjust = top.state === "Exhaustion" ? 1.15 : 1.0;
+  const pressureAdjust = 1.0 + (press.overallPressure / 100) * 0.2;
+  const finalRangeScale = clamp(rangeScale * tailAdjust * exhaustionAdjust * pressureAdjust, 0.6, 1.8);
+  rangeLo = Math.max(1, rangeLo / finalRangeScale);
+  rangeHi = rangeHi * finalRangeScale;
+
+  // B. Confidence-driven expected adjustment with tail bias
+  // Agreement shift: toward most confident/weighted components
+  const topComponents = compOut.filter((c) => c.weight > 0.15);
+  const weightedMedian = topComponents.length > 0
+    ? topComponents.reduce((sum, c) => sum + c.mid * c.weight, 0) / topComponents.reduce((sum, c) => sum + c.weight, 0)
+    : expected;
+  const agreementShift = (1.0 - confidence) * 0.4;
+  const expectedAfterAgreement = expected * (1 - agreementShift) + weightedMedian * agreementShift;
+
+  // Tail bias: upward in moonshot states, downward in collapse states
+  let tailBias = 0;
+  if (top.state === "Moonshot" || top.state === "Ignition") {
+    tailBias = (v6band.tailLift - 0.5) * 0.6;
+  } else if (top.state === "Collapse" || top.state === "Exhaustion") {
+    tailBias = (v6band.tailLift - 0.5) * 0.4;
+  }
+  const tailWeight = confidence * 0.3;
+  expected = expectedAfterAgreement * (1 + tailBias * tailWeight);
+
+  // C. Enhanced single band calculation
+  const expectedBandIndex = bandIndex(expected);
+  const modeBandIndex = mixture.findIndex((p) => p === Math.max(...mixture));
+  const stateBias = (top.state === "Moonshot" || top.state === "Ignition") ? 0.3 :
+                    (top.state === "Collapse" || top.state === "Exhaustion") ? -0.2 : 0;
+  const tailBandBias = (v6band.tailLift - 0.5) * 0.4;
+  const confidenceWeight = confidence;
+  const modeWeight = (1 - confidence) * 0.5;
+  const finalBandIndex = clamp(
+    expectedBandIndex * confidenceWeight +
+    modeBandIndex * modeWeight +
+    stateBias +
+    tailBandBias,
+    0, BAND_LABELS.length - 1
+  );
+  const computedBand = BAND_LABELS[Math.round(finalBandIndex)];
+
+  const bandLabel = computedBand;
   const honesty = bandTest.independent
     ? "Band-to-band transitions pass the chi-square independence test — consecutive rounds behave as independent draws, so engines can only earn weight by out-scoring the measured baseline on the calibration ledger."
     : "Band transitions fail the independence test on the trailing sample — conditional engines may carry information; their earned weights show how much.";
@@ -1143,6 +1190,19 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
       regime: { label: regime, volatility: r4(regVol), drift: r4(regDrift) },
       independence: { chiSquare: r2(bandTest.chiSquare), independent: bandTest.independent },
       honesty,
+      rangeScale: r4(finalRangeScale),
+      agreementShift: r4(agreementShift),
+      tailBias: r4(tailBias),
+      bandContext: {
+        tailLift: r4(v6band.tailLift),
+        stateBias: r4(stateBias),
+        tailBandBias: r4(tailBandBias),
+        confidenceWeight: r4(confidenceWeight),
+        modeWeight: r4(modeWeight),
+        expectedBandIndex: expectedBandIndex,
+        modeBandIndex: modeBandIndex,
+        computedBandIndex: Math.round(finalBandIndex),
+      },
     },
   };
 }

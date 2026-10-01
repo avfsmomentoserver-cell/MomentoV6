@@ -562,6 +562,19 @@ export interface IntelligenceBlock {
   regime: { label: string; volatility: number; drift: number };
   independence: { chiSquare: number; independent: boolean };
   honesty: string;
+  rangeScale?: number;
+  agreementShift?: number;
+  tailBias?: number;
+  bandContext?: {
+    tailLift: number;
+    stateBias: number;
+    tailBandBias: number;
+    confidenceWeight: number;
+    modeWeight: number;
+    expectedBandIndex: number;
+    modeBandIndex: number;
+    computedBandIndex: number;
+  };
 }
 
 export interface IntelCalibrationRow {
