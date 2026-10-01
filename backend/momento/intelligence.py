@@ -251,6 +251,24 @@ def classify_state(sig, m):
     return {"state": state, "scores": scores}
 
 
+# A label is a pure function of its <=40-round window, and consecutive
+# forecasts (live, walk-forward calibration) share all but one window, so the
+# labels are memoised by window content. Output is identical to recomputing.
+_STATE_MEMO: dict = {}
+_STATE_MEMO_MAX = 200_000
+
+
+def _state_of_window(w):
+    key = tuple(w)
+    hit = _STATE_MEMO.get(key)
+    if hit is None:
+        hit = classify_state(signals_of(w), w)["state"]
+        if len(_STATE_MEMO) >= _STATE_MEMO_MAX:
+            _STATE_MEMO.clear()
+        _STATE_MEMO[key] = hit
+    return hit
+
+
 def state_sequence(m, limit=1500):
     offset = max(0, len(m) - limit)
     labels = []
@@ -259,7 +277,7 @@ def state_sequence(m, limit=1500):
         if len(w) < 5:
             labels.append("Normal")
             continue
-        labels.append(classify_state(signals_of(w), w)["state"])
+        labels.append(_state_of_window(w))
     return {"labels": labels, "offset": offset}
 
 

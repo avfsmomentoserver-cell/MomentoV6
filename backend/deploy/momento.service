@@ -1,0 +1,15 @@
+[Unit]
+Description=Momento v6.5 backend (FastAPI)
+After=network-online.target
+
+[Service]
+Type=simple
+User=momento
+WorkingDirectory=/opt/momento/backend
+EnvironmentFile=/etc/momento/momento.env
+ExecStart=/opt/momento/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8787 --workers 1 --proxy-headers
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -121,13 +121,24 @@ Request → CORS → as_of middleware (sets a context var) → auth dependency (
 |---|---|---|
 | **P0** ✅ | Branch `afresh`; archive the TS backend to `archive/backend-ts-v6.5/`; this plan | Pushed (this commit) |
 | **P1** ✅ | Vendor `momento_core` into `backend/momento_core/`; fix the 27 failing tests; drop the SQLAlchemy coupling from the pure modules | Vendored suite green |
-| **P2** | Storage + app skeleton: schema, repository, envelope, auth (PBKDF2-compatible), settings, audit, health, users, sources, ingest, rounds, sessions, export/import | Login, ingest and rounds work against the unchanged frontend |
-| **P3** | Intelligence port: mixture, calibration, recalibrator, robust evaluation, point_range, engine_gate, analogue, pipeline, scoring, evidence; forecast and research routes | Golden parity tests pass; the forecast page renders |
-| **P4** | Analysis, linguistics (core engine), momentum, DNA, range lab, mega-pressure, investigate, market, charts / shapes, fair, FX | Every analysis and chart page renders with live data |
-| **P5** | Proof + Lab: accuracy ledger and hash chain, decisions, alerts, engines registry, workbench, experiments, backtests, deep jobs, simulate, seed, reconstruct | Contract test: all 205 routes return a valid envelope |
+| **P2** ✅ | Storage + app skeleton: schema, repository, envelope, auth (PBKDF2-compatible), settings, audit, health, users, sources, ingest, rounds, sessions, export/import | Login, ingest and rounds work against the unchanged frontend |
+| **P3** ✅ | Intelligence port: mixture, calibration, recalibrator, robust evaluation, point_range, engine_gate, analogue, pipeline, scoring, evidence; forecast and research routes | Golden parity tests pass; the forecast page renders |
+| **P4** ✅ | Analysis, linguistics (core engine), momentum, DNA, range lab, mega-pressure, investigate, market, charts / shapes, fair, FX | Every analysis and chart page renders with live data |
+| **P5** ✅ | Proof + Lab: accuracy ledger and hash chain, decisions, alerts, engines registry, workbench, experiments, backtests, deep jobs, simulate, seed, reconstruct | Contract test: all 205 routes return a valid envelope |
 | **P6** | Operate: orchestrator (core modules + `/orchestrator/settings`), autopilot, inventory plugins, knowledge/ask, AI summary; `momento_core` experts registered as gated candidate engines | Orchestrator, autopilot and inventory pages work; the gate table lists the new candidates |
 | **P7** | Scheduler, jobs, optional WebSocket `/live` (Ch 16 protocol), collectors CLI, deploy (Docker, systemd), docs | Live smoke: 3,000-round ingest, forecast p95 < 250 ms in-process, all frontend endpoints 200 |
 | **P8** | Evidence: walk-forward backtests (iid, drift) and the gate verdict for every candidate engine; honest results table in the docs | Report committed |
+
+### 5.1 Progress notes and deviations (kept current)
+
+- **Layout.** The routes live in `backend/app/routes.py` (core surface), `app/v64routes.py` and `app/v65routes.py` + `app/v65router.py` (Platform Book), dispatched in the archive's order (security/status → v6.5 → v6.4 → core). This replaces the per-domain `app/routers/*.py` split sketched in §4; behaviour is unchanged and it keeps a 1:1 mapping to the archived files for review.
+- **Contract test** (`backend/tests/contract`): regenerates the endpoint list from `web-momento/src` (every `api.get/post/put/del/live` and `useV1` call) plus the §9 matrix — 216 method/path pairs — and calls each one against a seeded database. Result: no 5xx, no missing route, envelope intact; 19 happy-path POST/PUT bodies also return `ok`.
+- **Ingest latency.** The archive scored up to 150 full-intelligence backtest forecasts *inside* the first ingest request (64 s for 3,000 rounds on the archived worker run locally). The Python server scores at most `MOMENTO_INGEST_INTEL_BUDGET` (default 10) inline and a background scheduler drains the rest (`MOMENTO_INTEL_DRAIN` per tick). Same rows, same order, same scores — just not on the request path. Live run: 3,000-round ingest returns in 1.9 s.
+- **State-sequence memo.** `intelligence.state_sequence` memoises each 40-round window's state label (pure function of the window), halving the cost of a full-intelligence forecast; parity tests unchanged.
+- **Users route hardening.** `POST /api/v1/users` now applies the same role allow-list, admin-only-admin rule and 12-character minimum as `/auth/register` (the archive accepted 4 characters and any role there).
+- **Time machine.** `as_of` is a request-scoped contextvar, so concurrent requests cannot leak it; the `X-Momento-As-Of` header and the 400 on a bad value match the archive.
+- **Federation note.** `/federation` reports `single-process (local SQLite)` instead of the Durable Object wording.
+- **Still open:** P6 (momento_core experts as gated candidates), P7 WebSocket `/live` and collectors CLI, P8 evidence report. Deploy files (`backend/deploy/`) and the scheduler are in.
 
 ## 6. Testing
 
