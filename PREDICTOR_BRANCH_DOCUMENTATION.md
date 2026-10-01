@@ -210,3 +210,38 @@ three in both scenarios.
 - Rounds of a provably-fair crash game are close to independent draws. No
   calibration layer can create predictive edge; it makes the stated
   probabilities honest. Forecasts are not betting advice.
+
+## Robust branch: locked-holdout evidence gate
+
+`functions/robust-evaluation.ts` answers one question the recalibrator does not:
+does the published forecast beat plain historical band frequencies on rounds it
+has never seen?
+
+- The resolved `intel_calibrations` ledger (raw distributions, oldest first) is
+  split once: the oldest 80% train, the newest 20% is a locked holdout.
+- The recalibrator and an unconditional baseline (Laplace-smoothed training band
+  frequencies) are fitted on the training segment only.
+- Raw, published and baseline distributions are scored on the same holdout
+  rounds: band log loss, Brier per public threshold (2×–100×), p25–p75 coverage.
+- `demonstrated-skill` requires the published log-loss gain over the baseline to
+  exceed one standard error of the paired per-round gain **and** positive mean
+  threshold Brier skill. Otherwise the status is `no-demonstrated-skill` or
+  `insufficient-data` (fewer than 100 training / 50 holdout rounds).
+
+Live integration (`core.ts`):
+
+- Every full-intelligence forecast carries an `evidence` block (version, status,
+  reason, data cutoff, sample counts, losses, threshold reliability).
+- Unless skill is demonstrated, `confidenceLabel` is capped at `LOW`; the
+  model's own label is kept in `evidence.confidenceLabelUngated`. Forecast
+  numbers are never changed by the gate. Setting `evidence_gate = 0` disables
+  the cap.
+- `GET /api/v1/research/evidence` returns the summary plus full detail;
+  `GET /api/v1/research/recalibration` also includes the summary.
+- The Full Intelligence dashboard shows a "Locked-holdout evidence" panel.
+- Evaluation failure falls back to an `insufficient-data` block and never breaks
+  the forecast. Evidence is refreshed on the recalibrator cadence (every 10
+  ledger rows).
+
+Backtest (`npm run predictor:backtest`) now prints a `lockedHoldout` block. On
+the synthetic i.i.d. tape it reports `no-demonstrated-skill`, as it should.

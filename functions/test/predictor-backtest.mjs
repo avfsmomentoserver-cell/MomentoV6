@@ -12,6 +12,7 @@
 //   crashGap  |mean forecast P(<2x) − observed share|
 import { fitRecalibrator } from "../.predictor-build/calibration.mjs";
 import { fullIntelligenceForecast } from "../.predictor-build/intelligence.mjs";
+import { evaluateLockedHoldout } from "../.predictor-build/robust-evaluation.mjs";
 import { syntheticTape } from "./synthetic.mjs";
 
 const arg = (k, d) => {
@@ -81,4 +82,17 @@ for (const [k, rows] of Object.entries(methods)) {
     crashGap: +Math.abs(mean(rows.map((r) => r.crash)) - mean(rows.map((r) => r.isCrash))).toFixed(4),
   };
 }
-console.log(JSON.stringify({ scenario, seed, warmup, scored, finalRecalibrator: { active: rc.active, quantileActive: rc.quantileActive, gamma: rc.gamma, tau: rc.tau, reason: rc.reason }, report }, null, 2));
+// locked chronological holdout over the resolved raw distributions: does the
+// published forecast beat plain band frequencies on untouched rounds?
+const ev = evaluateLockedHoldout(samples);
+const lockedHoldout = {
+  status: ev.status,
+  trainingSample: ev.trainingSample,
+  holdoutSample: ev.holdoutSample,
+  publishedLogLoss: ev.calibratedLogLoss === null ? null : +ev.calibratedLogLoss.toFixed(5),
+  baselineLogLoss: ev.baselineLogLoss === null ? null : +ev.baselineLogLoss.toFixed(5),
+  baselineSkillPct: ev.baselineSkillPct === null ? null : +ev.baselineSkillPct.toFixed(3),
+  meanBrierSkillPct: ev.meanBrierSkillPct === null ? null : +ev.meanBrierSkillPct.toFixed(3),
+  coverage50: ev.coverage50 === null ? null : +ev.coverage50.toFixed(3),
+};
+console.log(JSON.stringify({ scenario, seed, warmup, scored, lockedHoldout, finalRecalibrator: { active: rc.active, quantileActive: rc.quantileActive, gamma: rc.gamma, tau: rc.tau, reason: rc.reason }, report }, null, 2));

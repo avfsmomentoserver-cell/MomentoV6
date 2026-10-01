@@ -50,6 +50,7 @@ import {
   type WindowDef,
 } from "./pipeline";
 import { fitRecalibrator, reliabilityTable, sanitizeDist, survivalAt, type CalSample, type Recalibrator } from "./calibration";
+import { evaluateLockedHoldout, gateConfidence, summarizeEvidence, unavailableEvidence, type ForecastEvidence, type LockedHoldoutEvidence } from "./robust-evaluation";
 import {
   anchors,
   assessLive,
@@ -1299,6 +1300,38 @@ export class MomentoCore extends DurableObject {
     return value;
   }
 
+  private evidenceCache: { key: string; full: LockedHoldoutEvidence | null; value: ForecastEvidence } | null = null;
+
+  /**
+   * Locked-holdout evidence (robust-evaluation.ts): does the published forecast
+   * beat the unconditional band-frequency baseline on the most recent resolved
+   * rounds, with everything fitted only on earlier rounds? Refreshed on the same
+   * cadence as the recalibrator. Failure never breaks the forecast.
+   */
+  private intelEvidence(): { full: LockedHoldoutEvidence | null; value: ForecastEvidence } {
+    const sql = this.ctx.storage.sql;
+    const stamp = sql.exec("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS id FROM intel_calibrations").toArray()[0] as { n: number; id: number };
+    const window = clampInt(this.setting("intel_recalibration_window") ?? "1000", 100, 3000, 1000);
+    const live = this.intelRecalibrator();
+    const key = `${Math.floor(stamp.n / 10)}:${this.asOfMs ?? "live"}:${window}:${live.active}:${live.quantileActive}`;
+    if (this.evidenceCache?.key === key) return this.evidenceCache;
+    const cutoffRow = sql
+      .exec("SELECT MAX(created_ms) AS t FROM intel_calibrations WHERE resolved_ms IS NOT NULL AND actual IS NOT NULL AND created_ms < ?", this.asOfMs ?? 9e15)
+      .toArray()[0] as { t: number | null } | undefined;
+    const meta = { dataCutoffMs: cutoffRow?.t ?? null, ledgerWindow: window };
+    let full: LockedHoldoutEvidence | null = null;
+    let value: ForecastEvidence;
+    try {
+      full = evaluateLockedHoldout(this.intelCalSamples(window));
+      value = summarizeEvidence(full, live, meta);
+    } catch (e) {
+      console.error("[momento-v6] locked-holdout evidence failed", e);
+      value = unavailableEvidence("Locked-holdout evidence could not be computed; no skill is claimed.", meta);
+    }
+    this.evidenceCache = { key, full, value };
+    return this.evidenceCache;
+  }
+
   private intelForecastCache = new Map<string, FullIntelligenceForecast>();
 
   /**
@@ -1317,7 +1350,7 @@ export class MomentoCore extends DurableObject {
     const hit = this.intelForecastCache.get(key);
     if (hit) return hit;
     const corr = this.intelCorrection();
-    const value = fullIntelligenceForecast(rounds, source, {
+    const raw = fullIntelligenceForecast(rounds, source, {
       engineStates: reg.states,
       extraEngines: reg.extras,
       ledger: this.intelLedger(),
@@ -1326,6 +1359,10 @@ export class MomentoCore extends DurableObject {
       correctionSample: corr.sampleSize,
       recalibrator: this.intelRecalibrator(),
     });
+    // evidence gate: attach provenance and stop the label implying skill that
+    // the locked holdout has not shown (setting evidence_gate = 0 disables the cap)
+    const gated = gateConfidence(raw, this.intelEvidence().value, this.setting("evidence_gate") !== "0");
+    const value: FullIntelligenceForecast = { ...gated.forecast, evidence: gated.evidence };
     if (this.intelForecastCache.size >= 8) this.intelForecastCache.delete(this.intelForecastCache.keys().next().value as string);
     this.intelForecastCache.set(key, value);
     return value;
@@ -2062,7 +2099,13 @@ export class MomentoCore extends DurableObject {
       // reliability table (predicted vs observed band frequency, raw vs calibrated).
       const rc = this.intelRecalibrator();
       const samples = this.intelCalSamples(clampInt(this.setting("intel_recalibration_window") ?? "1000", 100, 3000, 1000));
-      return ok({ recalibrator: rc, reliability: reliabilityTable(samples, rc), bands: BAND_LABELS, sample: samples.length });
+      return ok({ recalibrator: rc, reliability: reliabilityTable(samples, rc), bands: BAND_LABELS, sample: samples.length, evidence: this.intelEvidence().value });
+    }
+    if (path === "/api/v1/research/evidence" && method === "GET") {
+      // Locked chronological holdout: published vs raw vs unconditional baseline,
+      // per-threshold reliability and p25–p75 coverage on untouched rounds.
+      const ev = this.intelEvidence();
+      return ok({ evidence: ev.value, detail: ev.full, bands: BAND_LABELS });
     }
     if (path === "/api/v1/calibration" && method === "GET") {
       const rounds = this.roundsFor(null);

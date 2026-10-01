@@ -2,7 +2,7 @@
 // suite and the walk-forward backtest (no Cloudflare runtime needed).
 import { build } from "esbuild";
 await build({
-  entryPoints: { calibration: "calibration.ts", intelligence: "intelligence.ts", v65: "v65.ts", robustEvaluation: "robust-evaluation.ts" },
+  entryPoints: { calibration: "calibration.ts", intelligence: "intelligence.ts", v65: "v65.ts", "robust-evaluation": "robust-evaluation.ts" },
   bundle: true,
   format: "esm",
   platform: "node",

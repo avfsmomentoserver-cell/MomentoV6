@@ -440,6 +440,27 @@ export interface PipelineForecast {
   inverted?: InvertedForecast;
 }
 
+export interface ForecastEvidence {
+  version: string;
+  status: "insufficient-data" | "no-demonstrated-skill" | "demonstrated-skill";
+  reason: string;
+  dataCutoffMs: number | null;
+  ledgerWindow: number;
+  trainingSample: number;
+  holdoutSample: number;
+  rejectedSample: number;
+  recalibrationActive: boolean;
+  quantileRecalibrationActive: boolean;
+  recalibrationReason: string;
+  logLoss: { raw: number | null; published: number | null; baseline: number | null };
+  baselineSkillPct: number | null;
+  meanBrierSkillPct: number | null;
+  coverage50: number | null;
+  thresholds: { threshold: number; predicted: number; observed: number; brierSkillPct: number | null }[];
+  confidenceGated: boolean;
+  confidenceLabelUngated: "HIGH" | "MEDIUM" | "LOW" | null;
+}
+
 export interface NextRoundForecast {
   source: string;
   generatedAt: string;
@@ -470,6 +491,8 @@ export interface NextRoundForecast {
   transitionMatrix?: Record<MarketState, Record<MarketState, number>>;
   blend?: Record<string, number>;
   intelligence?: IntelligenceBlock;
+  /** robust: locked chronological holdout evidence (functions/robust-evaluation.ts) */
+  evidence?: ForecastEvidence;
 }
 
 // ---- v6.3: full-intelligence forecast ------------------------------------

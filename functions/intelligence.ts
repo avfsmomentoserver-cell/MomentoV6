@@ -16,6 +16,7 @@
 //
 // Pure module: rounds in, forecast out. No I/O.
 
+import type { ForecastEvidence } from "./robust-evaluation";
 import {
   BAND_EDGES,
   BAND_LABELS,
@@ -690,6 +691,8 @@ export interface FullIntelligenceForecast {
     /** how the published headline was derived from the calibrated distribution */
     calibration: IntelCalibrationInfo;
   };
+  /** locked-holdout evidence / provenance, attached by the live core (robust-evaluation.ts) */
+  evidence?: ForecastEvidence;
 }
 
 // ------------------------------------------------------------- main engine

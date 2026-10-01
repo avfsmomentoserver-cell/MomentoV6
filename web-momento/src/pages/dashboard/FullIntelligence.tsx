@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { RefreshCw } from "lucide-react";
 import { api, qs } from "@/lib/api";
 import { fmtDateTime, fmtMult, fmtPct } from "@/lib/format";
-import type { IntelCalibrationSummary, MarketState, NextRoundForecast } from "@/lib/types";
+import type { ForecastEvidence, IntelCalibrationSummary, MarketState, NextRoundForecast } from "@/lib/types";
 import { EmptyState, Loading, PageHeader, Panel, StatTile } from "@/components/bits";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -20,6 +20,58 @@ const STATE_COLOR: Record<MarketState, string> = {
 };
 const STATES: MarketState[] = ["Normal", "Collapse", "Ignition", "Moonshot", "Exhaustion", "Shelf", "Bait"];
 const BAND_SHORT = ["<1.5", "1.5–2", "2–5", "5–10", "10–100", "100+"];
+
+const EVIDENCE_META: Record<ForecastEvidence["status"], { label: string; cls: string }> = {
+  "insufficient-data": { label: "Insufficient evidence", cls: "border-amber-400/40 bg-amber-400/10 text-amber-300" },
+  "no-demonstrated-skill": { label: "No demonstrated skill", cls: "border-rose-400/40 bg-rose-400/10 text-rose-300" },
+  "demonstrated-skill": { label: "Skill demonstrated on locked holdout", cls: "border-emerald-400/40 bg-emerald-400/10 text-emerald-300" },
+};
+
+function EvidencePanel({ ev }: { ev: ForecastEvidence }) {
+  const meta = EVIDENCE_META[ev.status] ?? EVIDENCE_META["insufficient-data"];
+  const ll = (x: number | null) => (x == null ? "—" : x.toFixed(4));
+  const pct = (x: number | null) => (x == null ? "—" : `${x > 0 ? "+" : ""}${x.toFixed(2)}%`);
+  return (
+    <Panel
+      title="Locked-holdout evidence"
+      right={<span className={cn("rounded-md border px-2 py-0.5 text-[11px] font-semibold", meta.cls)}>{meta.label}</span>}
+    >
+      <div className="space-y-3">
+        <p className="text-[12px] leading-relaxed text-muted-foreground">
+          {ev.reason}
+          {ev.confidenceGated && ev.confidenceLabelUngated ? ` Confidence label capped at LOW (model alone would say ${ev.confidenceLabelUngated}).` : ""}
+        </p>
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <StatTile label="Holdout rounds" value={String(ev.holdoutSample)} sub={`trained on ${ev.trainingSample} earlier`} />
+          <StatTile label="Log loss vs baseline" value={`${ll(ev.logLoss.published)} / ${ll(ev.logLoss.baseline)}`} sub={`skill ${pct(ev.baselineSkillPct)}`} />
+          <StatTile label="Threshold Brier skill" value={pct(ev.meanBrierSkillPct)} sub="mean over 2×–100×" />
+          <StatTile label="p25–p75 coverage" value={ev.coverage50 == null ? "—" : fmtPct(ev.coverage50, 0)} sub="target 50%" />
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full font-data text-[11px] tabular-nums">
+            <thead className="text-muted-foreground">
+              <tr><th className="text-left font-normal">≥ threshold</th><th className="text-right font-normal">predicted</th><th className="text-right font-normal">observed</th><th className="text-right font-normal">Brier skill</th></tr>
+            </thead>
+            <tbody>
+              {ev.thresholds.map((t) => (
+                <tr key={t.threshold}>
+                  <td>{t.threshold}×</td>
+                  <td className="text-right">{fmtPct(t.predicted, 1)}</td>
+                  <td className="text-right">{fmtPct(t.observed, 1)}</td>
+                  <td className="text-right">{pct(t.brierSkillPct)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          {ev.version} · recalibration {ev.recalibrationActive ? "on" : "off"}/{ev.quantileRecalibrationActive ? "on" : "off"} · data cutoff {ev.dataCutoffMs ? fmtDateTime(ev.dataCutoffMs) : "—"}
+          {ev.rejectedSample ? ` · ${ev.rejectedSample} corrupt ledger rows skipped` : ""}
+        </p>
+      </div>
+    </Panel>
+  );
+}
 
 const VERDICT_CHIP: Record<string, string> = {
   hit: "border-emerald-400/40 bg-emerald-400/10 text-emerald-300",
@@ -152,6 +204,7 @@ export default function FullIntelligence() {
             </div>
           </div>
           <p className="rounded-md border border-border/60 bg-background/40 px-3 py-2 text-[12px] leading-relaxed text-muted-foreground">{f.note} {intel.honesty}</p>
+          {f.evidence ? <EvidencePanel ev={f.evidence} /> : null}
 
           <div className="grid gap-4 xl:grid-cols-2">
             {/* candidates */}
