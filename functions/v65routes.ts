@@ -867,77 +867,116 @@ function explain(a: CoreAdapter, fRow: Rows, rounds: Round[]) {
 
 // ------------------------------------------------------------ F-37 ask
 
-async function askMomento(a: CoreAdapter, question: string, passages: { id: string; title: string; text: string }[]) {
-  const key = (a.env.ENTRIM_API_KEY as string) || a.setting("entrim_api_key") || "";
-  
-  // Gather database context for richer answers
-  const stats = a.tableStats();
-  const all = a.roundsFor(null);
-  const intel = a.intel(all, "all") as Record<string, unknown>;
-  const analysis = a.analysis(null) as Record<string, Record<string, unknown>>;
-  const lastRounds = all.slice(-10).map((r) => ({ id: r.id, multiplier: r.multiplier, ts: r.ts_ms }));
-  const dbContext = {
-    platformStats: { totalRounds: stats.count, maxId: stats.maxId, fromTs: stats.minTs, toTs: stats.maxTs },
-    currentIntelligence: {
-      state: intel.state,
-      expectedMultiplier: intel.expectedMultiplier,
-      range: [intel.rangeLo, intel.rangeHi],
-      confidence: intel.confidence,
-    },
-    recentRounds: lastRounds,
-    analysis: {
-      pressure: analysis.pressure ? (analysis.pressure as Record<string, unknown>).overallPressure : null,
-      moonshot: analysis.moonshot ?? null,
-    },
+/**
+ * Compact, stable summary of the full-intelligence forecast for embedding in
+ * other payloads (ETA board, cone, Ask Momento). Never embeds the whole forecast
+ * object — that is ~100 KB and was being copied onto every ETA row.
+ */
+export function intelSummary(intel: Record<string, unknown> | null | undefined) {
+  if (!intel || typeof intel !== "object") return null;
+  const block = (intel.intelligence ?? {}) as Record<string, unknown>;
+  const cal = (block.calibration ?? null) as Record<string, unknown> | null;
+  const dist = Array.isArray(intel.distribution) ? (intel.distribution as { label: string; probability: number }[]) : [];
+  return {
+    state: intel.state ?? null,
+    confidence: typeof intel.confidence === "number" ? intel.confidence : null,
+    confidenceLabel: intel.confidenceLabel ?? null,
+    expectedMultiplier: intel.expectedMultiplier ?? null,
+    rangeLo: intel.rangeLo ?? null,
+    rangeHi: intel.rangeHi ?? null,
+    moonshotReach: intel.moonshotReach ?? null,
+    band: intel.band ?? null,
+    pOver2: dist.length ? r4(dist.slice(2).reduce((acc, d) => acc + (d.probability ?? 0), 0)) : null,
+    calibrated: cal ? Boolean(cal.distributionActive || cal.quantileActive) : false,
+    generatedAt: intel.generatedAt ?? null,
   };
-  
+}
+
+type Passage = { id: string; title: string; text: string };
+
+async function askMomento(a: CoreAdapter, question: string, passages: Passage[]) {
+  const key = (a.env.ENTRIM_API_KEY as string) || a.setting("entrim_api_key") || "";
+
+  // Live data block — compact, numeric, and failure-tolerant: Ask must still
+  // answer documentation questions if the forecast cannot be built.
+  let live: Record<string, unknown> | null = null;
+  try {
+    const stats = a.tableStats();
+    const all = a.roundsFor(null);
+    const intel = all.length >= 50 ? intelSummary(a.intel(all, "all")) : null;
+    let pressure: unknown = null;
+    try {
+      const an = a.analysis(null) as Record<string, Record<string, unknown> | undefined>;
+      pressure = an.pressure?.overallPressure ?? null;
+    } catch {
+      /* analysis optional */
+    }
+    live = {
+      rounds: stats.count,
+      span: all.length ? { from: new Date(all[0].tsMs).toISOString(), to: new Date(all[all.length - 1].tsMs).toISOString() } : null,
+      last10: all.slice(-10).map((r) => r.multiplier),
+      forecast: intel,
+      megaPressurePct: pressure,
+    };
+  } catch {
+    live = null;
+  }
+  const liveText = live ? JSON.stringify(live) : "(live data unavailable)";
+
   if (!key) {
-    const contextText = passages.length 
-      ? passages.slice(0, 3).map((p) => `- ${p.text.slice(0, 280).trim()}… [${p.id}]`).join("\n")
-      : "No documentation passages matched.";
+    const lines = passages.slice(0, 3).map((p) => `- ${p.text.slice(0, 280).trim()}… [${p.id}]`);
+    const f = (live?.forecast ?? null) as ReturnType<typeof intelSummary>;
+    const liveLine = f
+      ? `- Live: ${live?.rounds} rounds · state ${f.state} · expected ${f.expectedMultiplier}x (p25–p75 ${f.rangeLo}–${f.rangeHi}x) · confidence ${f.confidenceLabel}${f.calibrated ? " · recalibrated" : ""} [data]`
+      : null;
+    if (!lines.length && !liveLine) return { answer: null, refused: true, reason: "No knowledge passages or live data matched, so Ask Momento refuses rather than guess.", citations: [], grounding: "none" };
     return {
-      answer: `Closest knowledge (no AI key set — extractive answer):\n\n${contextText}\n\nDB Context: ${JSON.stringify(dbContext, null, 2)}`,
+      answer: `Closest knowledge (no AI key set — extractive answer):\n\n${[...lines, ...(liveLine ? [liveLine] : [])].join("\n")}`,
       refused: false,
       citations: passages.slice(0, 3).map((p) => p.id),
+      grounding: lines.length ? "docs" : "data",
       model: "extractive",
     };
   }
-  
+
   const base = (a.setting("entrim_base_url") || "https://api.entrim.ai/v1").replace(/\/+$/, "");
   const model = a.setting("entrim_model") || "deepseek-ai/DeepSeek-V4-Flash";
-  
-  const passageText = passages.length 
+  const passageText = passages.length
     ? passages.map((p) => `[${p.id}] (${p.title}) ${p.text.slice(0, 1400)}`).join("\n\n")
-    : "(No documentation passages matched - answer from database context and general knowledge)";
-  
+    : "(no documentation passages matched)";
+
   try {
     const res = await fetch(`${base}/chat/completions`, {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model,
-        temperature: 0.3,
-        max_tokens: 1200,
+        temperature: 0.2,
+        max_tokens: 900,
         messages: [
-          { 
-            role: "system", 
-            content: "You are a Momento platform expert answering questions. Use documentation passages when available (cite with [id]). When passages don't cover the topic, use the database context and your general knowledge to provide helpful answers for experimentation, testing, and research. Be practical and specific. If completely unsure, say so rather than guess. Under 300 words." 
+          {
+            role: "system",
+            content:
+              "You answer questions about the Momento research platform. Sources, in priority order: (1) the numbered documentation passages — cite every claim from them with its id in square brackets, e.g. [ch08#3]; (2) the LIVE DATA JSON — cite numbers taken from it with [data]; (3) general statistics / research-methodology knowledge, only for how-to-test or methodology questions, and prefix those sentences with 'General:'. Never invent platform features, numbers or results. Forecasts are probabilities, never guarantees — do not present them as betting advice. If none of the sources support an answer, reply exactly: NO_ANSWER. Under 250 words.",
           },
-          { 
-            role: "user", 
-            content: `Question: ${question}\n\nDocumentation Passages:\n${passageText}\n\nDatabase Context:\n${JSON.stringify(dbContext, null, 2)}` 
-          },
+          { role: "user", content: `Question: ${question}\n\nDocumentation passages:\n${passageText}\n\nLIVE DATA:\n${liveText}` },
         ],
       }),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(45_000),
     });
+    if (!res.ok) return { answer: null, refused: true, reason: `AI provider returned HTTP ${res.status}.`, citations: [], grounding: "none", model };
     const body = (await res.json()) as { choices?: { message?: { content?: string } }[] };
     const text = body.choices?.[0]?.message?.content?.trim() ?? "";
-    const cited = [...new Set((text.match(/\[([^\]]+)\]/g) ?? []).map((s) => s.slice(1, -1)))].filter((id) => passages.some((p) => p.id === id));
-    if (!text) return { answer: null, refused: true, reason: "No response from AI provider.", citations: [], model };
-    return { answer: text, refused: false, citations: cited, model };
+    const tags = [...new Set((text.match(/\[([^\]]+)\]/g) ?? []).map((t) => t.slice(1, -1)))];
+    const cited = tags.filter((id) => passages.some((p) => p.id === id));
+    const usedData = tags.includes("data") && live !== null;
+    const general = /(^|\n)\s*General:/.test(text);
+    if (!text || text.includes("NO_ANSWER")) return { answer: null, refused: true, reason: "The sources do not support an answer, so Ask Momento refuses rather than guess.", citations: [], grounding: "none", model };
+    if (!cited.length && !usedData && !general) return { answer: null, refused: true, reason: "The answer did not cite a passage or the live data, so it was refused.", citations: [], grounding: "none", model };
+    const grounding = cited.length ? "docs" : usedData ? "data" : "general";
+    return { answer: text, refused: false, citations: cited, grounding, usedData, model };
   } catch (e) {
-    return { answer: null, refused: true, reason: `AI provider unreachable: ${e instanceof Error ? e.message : String(e)}`, citations: [] };
+    return { answer: null, refused: true, reason: `AI provider unreachable: ${e instanceof Error ? e.message : String(e)}`, citations: [], grounding: "none" };
   }
 }
 
@@ -1348,11 +1387,11 @@ export async function routeV65(a: CoreAdapter, method: string, path: string, q: 
     const h = num(q.get("h"), 5, 1, 20);
     const r = sql.exec("SELECT * FROM forecast_store ORDER BY id DESC LIMIT 1").toArray()[0] as Rows | undefined;
     const rs = rounds();
-    const intel = a.intel(rs, "all") as unknown as Record<string, unknown>;
-    const dist = r ? parse<number[]>(r.dist, []) : (intel as IntelLike).distribution.map((d) => d.probability);
+    const intel = r ? null : (a.intel(rs, "all") as unknown as IntelLike & Record<string, unknown>);
+    const dist = r ? parse<number[]>(r.dist, []) : intel!.distribution.map((d) => d.probability);
     const cad = medianIntervalMs(rs);
     const last = rs[rs.length - 1];
-    const eta = etaBoard(rs, { intelligence: intel }).rows.filter((x) => x.threshold === 10 || x.threshold === 50);
+    const eta = etaBoard(rs).rows.filter((x) => x.threshold === 10 || x.threshold === 50);
     // measured visual coverage on resolved stored forecasts
     const res = ledgerRows(a, pickLedger(a, q), 2000);
     const cov = res.length ? res.filter((x) => x.actual >= quantileFromDist(x.dist, 0.25) && x.actual <= quantileFromDist(x.dist, 0.75)).length / res.length : null;
@@ -1364,7 +1403,7 @@ export async function routeV65(a: CoreAdapter, method: string, path: string, q: 
       cone: coneFrom(dist, h).map((c) => ({ ...c, t: (last?.tsMs ?? Date.now()) + c.h * cad })),
       etaMarkers: eta.map((e) => ({ threshold: e.threshold, rounds: e.etaMedian, at: e.etaMedianAt })),
       coverage: { p25p75: cov != null ? r4(cov) : null, belowP90: cov90 != null ? r4(cov90) : null, n: res.length },
-      intelligence: intel,
+      intelligence: intelSummary(intel ?? (rs.length >= 50 ? a.intel(rs, "all") : null)),
     });
   }
 
@@ -1479,8 +1518,14 @@ export async function routeV65(a: CoreAdapter, method: string, path: string, q: 
   // ---- F-26 / F-27 / F-29 survival
   if (p === "eta/board" && method === "GET") {
     const rs = rounds();
-    const intel = a.intel(rs, "all") as unknown as Record<string, unknown>;
-    return ok(etaBoard(rs, { intelligence: intel }));
+    const board = etaBoard(rs);
+    let intelligence: ReturnType<typeof intelSummary> = null;
+    try {
+      intelligence = rs.length >= 50 ? intelSummary(a.intel(rs, "all")) : null;
+    } catch {
+      intelligence = null; // the ETA board never fails because the forecast did
+    }
+    return ok({ ...board, intelligence });
   }
   if (p === "eta/hazard" && method === "GET") return ok(hazardTimeline(rounds(), num(q.get("T"), 10, 1.01, 1000), num(q.get("maxG"), 120, 10, 2000)));
   if (p === "eta/inround" && method === "GET") return ok(inRoundEta(rounds(), num(q.get("m0"), 1, 1, 10000)));

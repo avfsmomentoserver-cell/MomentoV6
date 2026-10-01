@@ -527,6 +527,25 @@ export interface IntelExhaustionBand {
   status: "overdue" | "due" | "fresh";
 }
 
+export interface IntelCalibrationInfo {
+  distributionActive: boolean;
+  quantileActive: boolean;
+  gamma: number;
+  tau: number;
+  levels: { rangeLo: number; expected: number; rangeHi: number; reach: number };
+  sample: number;
+  validSample: number;
+  validRawLogLoss: number | null;
+  validCalLogLoss: number | null;
+  improvementPct: number | null;
+  coverageRaw: number | null;
+  coverageCal: number | null;
+  crash: { raw: number; calibrated: number; observed: number };
+  legacyCorrection: boolean;
+  modeBand: string;
+  reason: string;
+}
+
 export interface IntelligenceBlock {
   components: IntelComponent[];
   agreement: number;
@@ -562,31 +581,8 @@ export interface IntelligenceBlock {
   regime: { label: string; volatility: number; drift: number };
   independence: { chiSquare: number; independent: boolean };
   honesty: string;
-  rangeScale?: number;
-  agreementShift?: number;
-  tailBias?: number;
-  bandContext?: {
-    tailLift: number;
-    stateBias: number;
-    tailBandBias: number;
-    confidenceWeight: number;
-    modeWeight: number;
-    expectedBandIndex: number;
-    modeBandIndex: number;
-    computedBandIndex: number;
-  };
-  candidateBias?: number;
-  collapseBias?: number;
-  ceilingAdjustment?: number;
-  candidateSpread?: number;
-  weightedCandidateExpected?: number;
-  empiricalCrashRate?: number;
-  baselineCrashRate?: number;
-  crashTrend?: number;
-  crashBias?: number;
-  modeWeight?: number;
-  hardCrashRate?: number;
-  softCrashRate?: number;
+  /** predictor: how the headline was derived from the out-of-sample calibrated distribution */
+  calibration?: IntelCalibrationInfo;
 }
 
 export interface IntelCalibrationRow {

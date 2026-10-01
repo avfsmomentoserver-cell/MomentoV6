@@ -225,54 +225,42 @@ export default function CommandCenter() {
                         rectified {nr.rectification.factor.toFixed(2)}×
                       </span>
                     )}
-                    {nr.intelligence?.bandContext && (
-                      <>
-                        <span className="rounded-md border border-cyan-400/30 bg-cyan-400/5 px-2 py-0.5 text-[10px] text-cyan-300" title={`Tail lift: ${nr.intelligence.bandContext.tailLift.toFixed(2)}`}>
-                          tail: {nr.intelligence.bandContext.tailLift > 0.5 ? "+" : ""}{Math.round((nr.intelligence.bandContext.tailLift - 0.5) * 100)}%
-                        </span>
-                        <span className="rounded-md border border-orange-400/30 bg-orange-400/5 px-2 py-0.5 text-[10px] text-orange-300" title={`State bias: ${nr.intelligence.bandContext.stateBias.toFixed(2)}`}>
-                          state: {nr.state}
-                        </span>
-                        <span className="rounded-md border border-purple-400/30 bg-purple-400/5 px-2 py-0.5 text-[10px] text-purple-300" title={`Confidence weight: ${nr.intelligence.bandContext.confidenceWeight.toFixed(2)}`}>
-                          conf: {nr.confidence.toFixed(2)}
-                        </span>
-                      </>
-                    )}
-                    {nr.intelligence?.candidateBias !== undefined && (
-                      <span className="rounded-md border border-emerald-400/30 bg-emerald-400/5 px-2 py-0.5 text-[10px] text-emerald-300" title={`Candidate bias: ${nr.intelligence.candidateBias.toFixed(2)}`}>
-                        cand: {Math.round(nr.intelligence.candidateBias * 100)}%
-                      </span>
-                    )}
-                    {nr.intelligence?.collapseBias !== undefined && Math.abs(nr.intelligence.collapseBias) > 0.01 && (
-                      <span className="rounded-md border border-red-400/30 bg-red-400/5 px-2 py-0.5 text-[10px] text-red-300" title={`Collapse bias: ${nr.intelligence.collapseBias.toFixed(2)}`}>
-                        col: {nr.intelligence.collapseBias > 0 ? "+" : ""}{Math.round(nr.intelligence.collapseBias * 100)}%
-                      </span>
-                    )}
-                    {nr.intelligence?.ceilingAdjustment !== undefined && (
-                      <span className="rounded-md border border-blue-400/30 bg-blue-400/5 px-2 py-0.5 text-[10px] text-blue-300" title={`Ceiling adjustment: ${nr.intelligence.ceilingAdjustment.toFixed(2)}`}>
-                        ceil: {nr.intelligence.ceilingAdjustment < 1 ? "⊕" : "⊖"}{Math.abs(Math.round((nr.intelligence.ceilingAdjustment - 1) * 100))}%
-                      </span>
-                    )}
-                    {nr.intelligence?.candidateSpread !== undefined && (
-                      <span className="rounded-md border border-yellow-400/30 bg-yellow-400/5 px-2 py-0.5 text-[10px] text-yellow-300" title={`Candidate spread: ${nr.intelligence.candidateSpread.toFixed(2)}`}>
-                        spread: {nr.intelligence.candidateSpread.toFixed(2)}
-                      </span>
-                    )}
-                    {nr.intelligence?.empiricalCrashRate !== undefined && (
-                      <span className="rounded-md border border-gray-400/30 bg-gray-400/5 px-2 py-0.5 text-[10px] text-gray-300" title={`Empirical crash rate: ${nr.intelligence.empiricalCrashRate.toFixed(2)}`}>
-                        crash: {Math.round(nr.intelligence.empiricalCrashRate * 100)}%
-                      </span>
-                    )}
-                    {nr.intelligence?.crashBias !== undefined && Math.abs(nr.intelligence.crashBias) > 0.01 && (
-                      <span className="rounded-md border border-red-400/30 bg-red-400/5 px-2 py-0.5 text-[10px] text-red-300" title={`Crash bias: ${nr.intelligence.crashBias.toFixed(2)}`}>
-                        bias: {nr.intelligence.crashBias > 0 ? "+" : ""}{Math.round(nr.intelligence.crashBias * 100)}%
-                      </span>
-                    )}
-                    {nr.intelligence?.modeWeight !== undefined && nr.intelligence.modeWeight > 0.05 && (
-                      <span className="rounded-md border border-purple-400/30 bg-purple-400/5 px-2 py-0.5 text-[10px] text-purple-300" title={`Mode weight: ${nr.intelligence.modeWeight.toFixed(2)}`}>
-                        mode: {Math.round(nr.intelligence.modeWeight * 100)}%
-                      </span>
-                    )}
+                    {nr.intelligence?.calibration && (() => {
+                      const cal = nr.intelligence.calibration;
+                      const on = cal.distributionActive || cal.quantileActive;
+                      return (
+                        <>
+                          <span
+                            title={cal.reason}
+                            className={cn(
+                              "rounded-md border px-2 py-0.5 text-[10px]",
+                              on ? "border-emerald-400/40 bg-emerald-400/5 text-emerald-300" : "border-border/70 bg-background/40 text-muted-foreground",
+                            )}
+                          >
+                            {on
+                              ? `calibrated${cal.improvementPct != null && cal.distributionActive ? ` · −${cal.improvementPct.toFixed(1)}% log-loss` : ""}`
+                              : cal.sample < 60 ? `calibrating ${cal.sample}/60` : "raw mixture (recal not earned)"}
+                          </span>
+                          <span
+                            title={`P(<2x): forecast ${fmtPct(cal.crash.calibrated, 1)} (raw mixture ${fmtPct(cal.crash.raw, 1)}) vs observed ${fmtPct(cal.crash.observed, 1)} over the last 500 rounds`}
+                            className="rounded-md border border-border/70 bg-background/40 px-2 py-0.5 text-[10px] text-muted-foreground"
+                          >
+                            P(&lt;2x) {fmtPct(cal.crash.calibrated, 0)} · seen {fmtPct(cal.crash.observed, 0)}
+                          </span>
+                          {cal.coverageCal != null && (
+                            <span
+                              title="Held-out share of rounds that landed inside the published p25–p75 range (target 50%)"
+                              className={cn(
+                                "rounded-md border px-2 py-0.5 text-[10px]",
+                                Math.abs(cal.coverageCal - 0.5) <= 0.06 ? "border-cyan-400/30 text-cyan-300" : "border-orange-400/30 text-orange-300",
+                              )}
+                            >
+                              p25–p75 hit {fmtPct(cal.coverageCal, 0)}
+                            </span>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
@@ -285,21 +273,10 @@ export default function CommandCenter() {
                       <p className={cn("font-data mt-0.5 text-sm tabular-nums transition-all duration-400 ease-out", nr.confidence >= 0.66 ? "text-cyan-400" : nr.confidence >= 0.38 ? "text-slate-300" : "text-orange-400")}>{fmtMult(nr.rangeLo)} — {fmtMult(nr.rangeHi)}</p>
                       <p className="mt-0.5 text-[10px] text-muted-foreground transition-all duration-400 ease-out">
                         moonshot reach (p90) ~{fmtMult(nr.moonshotReach)}
-                        {nr.intelligence?.rangeScale && (
-                          <span className="ml-2 text-muted-foreground/60">· scale ×{nr.intelligence.rangeScale.toFixed(2)}</span>
-                        )}
-                        {nr.intelligence?.ceilingAdjustment && (
-                          <span className="ml-2 text-muted-foreground/60">· ceil ×{nr.intelligence.ceilingAdjustment.toFixed(2)}</span>
+                        {nr.intelligence?.calibration && (
+                          <span className="ml-2 text-muted-foreground/60">· mode {nr.intelligence.calibration.modeBand}</span>
                         )}
                       </p>
-                      {nr.intelligence?.rangeScale && (
-                        <div className="mt-1 h-1 w-full max-w-[80px] rounded-full bg-border overflow-hidden">
-                          <div
-                            className={cn("h-full transition-all duration-400 ease-out", nr.intelligence.rangeScale > 1 ? "bg-orange-400" : "bg-cyan-400")}
-                            style={{ width: `${Math.min(100, nr.intelligence.rangeScale * 50)}%` }}
-                          />
-                        </div>
-                      )}
                     </div>
                   </div>
                   <div>

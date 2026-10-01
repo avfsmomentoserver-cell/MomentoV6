@@ -1,598 +1,212 @@
-# MomentoV6 Predictor Branch Documentation
+# MomentoV6 Predictor Branch
 
 ## Overview
 
-The `predictor` branch implements comprehensive AI-powered forecasting enhancements for the MomentoV6 research console. This branch integrates full-intelligence forecasting across all prediction systems, adds dynamic confidence-driven adjustments, and provides enhanced database context for AI queries.
+The `predictor` branch makes the full-intelligence forecast the single source of
+truth for every prediction surface (Command Center, ETA board, cone, scheduled
+multi-window predictions, Ask Momento) and calibrates it **out of sample**.
 
-## Table of Contents
+Version 2 of the branch replaces the first implementation's stack of hand-tuned
+multipliers (ETA nudge, cone-spread nudge, confidence range scaling, agreement
+shift, tail bias, candidate shift, collapse bias, ceiling bands, spread bands,
+crash bias, mode blending, high-crash quantile switch). Those adjustments were
+applied one after another to the point estimate and range *after* the
+distribution was computed, so the published "p25–p75" range and "expected"
+value no longer corresponded to any probability, and none of them were
+validated. The walk-forward backtest below shows the effect: the v1 range held
+~89% of rounds instead of 50%, and "expected" sat near the 70th percentile.
 
-1. [Entrim AI Integration](#entrim-ai-integration)
-2. [Ask Momento Enhancement](#ask-momento-enhancement)
-3. [ETA Intelligence Context](#eta-intelligence-context)
-4. [Command Center Enhancements](#command-center-enhancements)
-5. [Full Intelligence for Multi-Window Predictions](#full-intelligence-for-multi-window-predictions)
-6. [ETA and Cone Spread Adjustments](#eta-and-cone-spread-adjustments)
-7. [Dynamic Confidence-Driven Forecast](#dynamic-confidence-driven-forecast)
-8. [Configuration](#configuration)
-9. [System Services](#system-services)
-10. [API Endpoints](#api-endpoints)
+## Design principles
 
----
+1. **One distribution, every number.** Expected (median), range (p25–p75),
+   moonshot reach (p90), band, horizon probabilities, and scheduled window
+   probabilities are all read from the same calibrated distribution, so they
+   can never contradict each other. `band` is always the band of `expected`.
+2. **Adjustments must be earned.** A recalibration layer only switches on after
+   it beats the raw mixture on held-out rounds; otherwise the raw mixture is
+   published unchanged.
+3. **No leakage.** The recalibrator is fitted only on forecasts that resolved
+   before the round being forecast, and the ledger stores the *raw* mixture so
+   the layer is never fitted on its own output.
+4. **Fail soft.** ETA board, cone and Ask Momento still answer if the forecast
+   cannot be built; corrupt ledger rows are skipped; the fit falls back to
+   identity on any error.
 
-## Entrim AI Integration
+## Out-of-sample recalibration (`functions/calibration.ts`)
 
-### Purpose
-Integrate Entrim AI as the primary AI provider for AI summaries and Ask Momento responses.
+### Layer 1 — distribution (band level)
 
-### Implementation
-
-**Environment Configuration**
-- API key stored in `/home/admin/V6/MomentoV6/functions/.env`
-- Variable name: `ENTRIM_API_KEY`
-- Base URL: `https://api.entrim.ai/v1` (default)
-- Default model: `deepseek-ai/DeepSeek-V4-Flash`
-
-**Code Changes**
-- Modified `functions/local-dev.mjs` to load `.env` file using dotenv
-- Updated systemd backend service to load environment from `.env` via `EnvironmentFile` directive
-- AI summary code in `functions/v64routes.ts` checks `ENTRIM_API_KEY` first, then falls back to settings
-
-**Fallback Behavior**
-- Without API key: Returns deterministic fallback content
-- On provider failure: Stores error status and fallback content
-
----
-
-## Ask Momento Enhancement
-
-### Purpose
-Expand Ask Momento to use database context and broader research sources, removing the strict citation-only restriction.
-
-### Implementation
-
-**Backend Changes (`functions/v65routes.ts`)**
-- Added database context to every AI query:
-  - Platform statistics (total rounds, timestamps)
-  - Current intelligence state (expected multiplier, range, confidence)
-  - Recent rounds (last 10 rounds with multipliers)
-  - Analysis data (pressure, moonshot indicators)
-- Removed strict citation-only restriction
-- Updated system prompt to allow answering from:
-  - Documentation passages (with citations when used)
-  - Database context
-  - General knowledge for experimentation, testing, and research
-- Increased max tokens from 700 to 1200 for more detailed answers
-
-**Frontend Changes (`web-momento/src/pages/dashboard/Ask.tsx`)**
-- Updated subtitle to reflect expanded capabilities
-- Added new example questions:
-  - "What's the current intelligence state?"
-  - "How do I test a new strategy?"
-  - "What patterns should I watch for?"
-
-**Benefits**
-- AI can now answer questions about live data and statistics
-- Strategy testing and research queries are supported
-- No longer limited to documentation-only responses
-
----
-
-## ETA Intelligence Context
-
-### Purpose
-Add full-intelligence forecast context to ETA predictions for better decision support.
-
-### Implementation
-
-**Backend Changes**
-- Modified `functions/v65.ts` `etaBoard()` to accept optional `intelligence` parameter
-- Updated `functions/v65routes.ts` ETA endpoint to fetch full intelligence forecast and pass it to etaBoard
-- Intelligence context included in ETA response data
-
-**Frontend Changes (`web-momento/src/pages/dashboard/EtaBoard.tsx`)**
-- Updated type definitions to include intelligence
-- Enhanced ETA Board UI to display intelligence state and confidence alongside KM estimates
-
-**Data Provided**
-- State (e.g., "Exhaustion", "Moonshot")
-- Confidence (0.0-1.0)
-- Confidence label (HIGH/MEDIUM/LOW)
-- Expected multiplier
-- Range (lo/hi)
-- Distribution and engine components
-- Calibration metadata
-
----
-
-## Command Center Enhancements
-
-### Purpose
-Add ETA and cone predictions to the Command Center for comprehensive forecasting view.
-
-### Implementation
-
-**Backend Changes (`functions/v65routes.ts`)**
-- Enhanced `/api/v1/intelligence/cone` endpoint to include full intelligence context in response
-- The cone now includes the intelligence forecast alongside cone data
-
-**Frontend Changes (`web-momento/src/pages/dashboard/CommandCenter.tsx`)**
-- Added ETA board query to fetch live ETA estimates
-- Added intelligence cone query to fetch cone predictions with coverage metrics
-- Added two new metric tiles:
-  - **ETA 10×**: Shows median ETA estimate for hitting 10× with KM percentile
-  - **Cone coverage**: Shows measured p25-p75 coverage of the forecast cone
-
-**Metrics Displayed**
-- ETA estimates for various thresholds
-- Cone coverage metrics (p25p75, belowP90)
-- Intelligence state and confidence
-
----
-
-## Full Intelligence for Multi-Window Predictions
-
-### Purpose
-Use full intelligence forecast for scheduled multi-window predictions instead of simple pipeline model.
-
-### Implementation
-
-**Backend Changes (`functions/core.ts`)**
-- Modified `accuracyTick()` to use full intelligence forecast instead of pipeline
-- Scheduled predictions now use full-intelligence per-round probabilities from horizon outlook
-- Model field in `scheduled_predictions` changes from `'pipeline'` to `'full-intelligence'`
-- Components now include all 8 intelligence engines (baseline, percentile, markov, dna, band, ml, ensemble, signals)
-- Ledger tracking updated to use actual model name instead of hardcoded `'pipeline'`
-- Fallback to pipeline if full intelligence data is not available
-
-**How It Works**
-1. Fetches full intelligence forecast
-2. Extracts per-round probabilities from horizon outlook for each threshold
-3. Calculates window probability: `1 - (1 - perRound)^nRounds`
-4. Stores with full intelligence components
-
-**Benefits**
-- More accurate multi-window predictions
-- Better utilization of all 8 intelligence engines
-- Consistent forecasting across all systems
-
----
-
-## ETA and Cone Spread Adjustments
-
-### Purpose
-Use ETA median and cone spread to adjust next-round forecast expected value and range.
-
-### Implementation
-
-**Backend Changes (`functions/intelligence.ts`)**
-- Added `etaMedian` and `coneSpread` options to `IntelOptions`
-- Imported `quantileFromDist` from v65 for distribution quantile calculations
-
-**ETA-Based Expected Adjustment**
-- If ETA median < 3 rounds: Increase expected by 5%
-- If ETA median > 15 rounds: Decrease expected by 5%
-- Otherwise: No adjustment
-
-**Cone Spread-Based Range Adjustment**
-- Calculates cone spread from forecast distribution: `(p90 - p25) / p50`
-- Normalized spread clamped to 0.8-2.0
-- Higher spread = wider range, lower spread = narrower range
-- Applied with 30% factor for conservative adjustment
-
-**Backend Integration (`functions/core.ts`)**
-- Modified `intelForecast()` to:
-  - Calculate ETA median using `etaBoard()` for 10× threshold
-  - Calculate cone spread from forecast distribution
-  - Pass both values to full intelligence forecast
-  - Re-forecast if cone spread differs significantly (>10%) from default
-
----
-
-## Dynamic Confidence-Driven Forecast
-
-### Purpose
-Make Command Center forecast dynamic with aggressive confidence-weighted adjustments to expected value and range, incorporating distribution curve, band exhaustion, tail bias for moonshot states, and other factors.
-
-### Implementation
-
-**Backend Changes (`functions/intelligence.ts`)**
-
-**A. Aggressive Confidence-Weighted Range Scaling**
 ```
-rangeScale = 1.0 + (0.5 - confidence) * 0.6
-tailAdjust = 1.0 + (tailLift - 0.5) * 0.3
-exhaustionAdjust = top.state === "Exhaustion" ? 1.15 : 1.0
-pressureAdjust = 1.0 + (press.overallPressure / 100) * 0.2
-finalRangeScale = clamp(rangeScale * tailAdjust * exhaustionAdjust * pressureAdjust, 0.6, 1.8)
+p'_i ∝ (p_i · r_i^γ)^τ
+r_i = (observed_i + κ) / (expected_i + κ)     κ = 20, clamped to [0.25, 4]
+γ ∈ {0, .25, .5, .75, 1}   τ ∈ {.6, .7, .8, .9, 1, 1.1, 1.25}
 ```
 
-- HIGH confidence (≥0.66): Tighten range by 15-25%
-- MEDIUM confidence (0.38-0.66): 0-15% adjustment
-- LOW confidence (<0.38): Widen range by 30-50%
+`r_i` is the shrunk per-band reliability ratio (fixes systematic bias such as an
+under-forecast crash rate or an over-weighted 10–100x band); `τ` is a
+temperature (fixes over/under-confidence).
 
-**B. Confidence-Driven Expected Adjustment with Tail Bias**
+**Validation:** rolling-origin (forward-chaining) cross-validation with five
+folds (train on the first 50/60/70/80/90% of the window, score on the next
+10%). The whole fitting procedure is re-run inside each fold. The layer
+activates only when the mean held-out log-loss gain exceeds one standard error
+of the paired difference. Parameters are then refitted on the whole window.
 
-*Agreement Shift*
-- Calculates weighted median from top-weighted components (weight > 15%)
-- Shifts 0-40% toward agreement based on confidence
-- LOW confidence = stronger shift toward agreed predictions
+Measured on 40 seeds × 1000 rounds: activates on **40/40** miscalibrated ledgers
+and on **1/40** well-calibrated ledgers (false-positive rate ≈ 2.5%).
 
-*Tail Bias*
-- Moonshot/Ignition states: Upward bias based on tailLift (up to 30%)
-- Collapse/Exhaustion states: Downward bias based on tailLift (up to 20%)
-- Tail bias moderated by confidence: HIGH confidence = stronger tail bias
+### Layer 2 — quantile levels (PIT recalibration)
 
-**C. Enhanced Single Band Calculation**
-- Blends expected value with mode (most likely band from distribution)
-- Factors in state bias (+0.3 for Moonshot/Ignition, -0.2 for Collapse/Exhaustion)
-- Factors in tailLift bias
-- Confidence determines trust in expected vs mode
+For each published level `q ∈ {0.25, 0.5, 0.75, 0.9}` the forecast reads
+`F⁻¹(q')` with `q' = G⁻¹(q)`, where `G` is the empirical CDF of the PIT values
+`u = F(actual)` (Kuleshov et al., 2018). The level map is shrunk toward identity
+by `n / (n + 100)`, forced to be monotone, and accepted only when it reduces the
+held-out quantile calibration error on the same folds.
 
-**Response Fields Added**
-- `rangeScale`: Final range scaling factor
-- `agreementShift`: How much expected shifted toward agreement
-- `tailBias`: Tail bias applied
-- `bandContext`: {
-    - tailLift
-    - stateBias
-    - tailBandBias
-    - confidenceWeight
-    - modeWeight
-    - expectedBandIndex
-    - modeBandIndex
-    - computedBandIndex
-  }
+### Continuous CDF
 
-**Frontend Changes (`web-momento/src/pages/dashboard/CommandCenter.tsx`)**
+Within each band the CDF follows the crash-game law `S(x) ∝ 1/x` (Pareto α = 1):
+`F(x | band) = (1/lo − 1/x) / (1/lo − 1/hi)`; the open top band uses
+`1 − lo/x`. This is the same interpolation as `v65.quantileFromDist`, so PIT
+values and quantiles agree. `survivalAt(dist, t)` gives `P(X ≥ t)` for **any**
+threshold (scheduled predictions are no longer limited to 2/5/10/20/50/100).
 
-**Visual Enhancements**
-- Band computation context badges (tail lift, state bias, confidence weight)
-- Color-coded range display based on confidence:
-  - HIGH: Cyan (precise)
-  - MEDIUM: Slate (neutral)
-  - LOW: Orange (uncertain)
-- Range scale indicator bar showing width relative to baseline
-- Range scale factor display: "scale ×1.09"
+### Legacy median rectification
 
-**Smooth Transitions**
-- 400ms transitions on all forecast values
-- Distribution bars animate smoothly
-- Confidence ring animates with 900ms duration
+The existing median log-bias correction (`intelCorrection`) is applied only
+while neither recalibration layer is active; otherwise the median would be
+corrected twice. When applied, it now shifts the whole central block so the
+range still brackets the point estimate.
 
-**Component Weight Display**
-- Progress bars showing each component's weight
-- Dominant components (>15% weight) highlighted in primary color
-- Visual indication of engine dominance
+## Backend integration (`functions/core.ts`)
 
-**Type Changes (`web-momento/src/lib/types.ts`)**
-- Added `rangeScale`, `agreementShift`, `tailBias` to `IntelligenceBlock`
-- Added `bandContext` object with computation factors
+| Piece | Behaviour |
+|---|---|
+| `intelRecalibrator()` | Fits from the last `intel_recalibration_window` (default 1000, range 100–3000) resolved `intel_calibrations` rows. Refits every 10 new rows. Disable with setting `intel_recalibration = 0`. |
+| `intelForecast()` | Memoised on (source, tape head, ledger stamp, registry, as_of, recal setting); max 8 entries; cleared by `invalidateCaches()`. Repeat calls went from ~130 ms to ~4 ms in the smoke test. |
+| `calibrateIntel()` | Passes the walk-forward recalibrator; stores the **raw** mixture in `dist`, raw loss in `mix_loss`, published-distribution loss in new column `cal_loss` (idempotent `ALTER TABLE` migration). |
+| `intelLedger()` | Mixture skill (confidence gate) uses `COALESCE(cal_loss, mix_loss)`, i.e. the loss of what is actually published. |
+| `accuracyTick()` | Schedules the v6 `pipeline` (champion) **and** `full-intelligence` (challenger) per (model, window, threshold). Stored component probabilities are now window probabilities, so the baseline Brier compares like with like (it previously compared a per-round baseline to a window outcome). Nothing is scheduled with < 50 rounds of history. The rolling chart tracks the champion only. |
+| `/api/v1/accuracy/overview` | New `byModel` block: n, Brier, baseline Brier, log-loss, hit rate and Brier skill % for pipeline vs full-intelligence. |
+| `/api/v1/research/recalibration` | Recalibrator diagnostics plus a reliability table (predicted raw / calibrated vs observed frequency per band). Replaces the stub `candidate-bias-test` endpoint, which returned hard-coded "recommended" constants. |
 
----
+## Routes (`functions/v65routes.ts`)
 
-## Configuration
+- **ETA board / cone**: attach a compact `intelligence` summary (state,
+  confidence, expected, range, reach, band, P(≥2x), calibrated flag) instead of
+  copying the full ~100 KB forecast onto the board and every ETA row.
+  `etaBoard()` in `v65.ts` is back to its original signature. The ETA board no
+  longer fails if the forecast fails.
+- **Ask Momento** (`POST /api/v1/knowledge/ask`): answers are grounded again.
+  Documentation claims must cite a passage id, live numbers must cite `[data]`,
+  methodology answers from general knowledge must be prefixed `General:`.
+  Anything else, or `NO_ANSWER`, is refused. The response carries
+  `grounding: docs | data | general | none`. The extractive (no-key) fallback
+  prints a readable live line instead of a raw JSON dump. HTTP errors from the
+  provider are reported instead of being parsed as answers.
 
-### Environment Variables
+## Forecast payload
 
-**Required**
-- `ENTRIM_API_KEY`: Entrim AI API key (stored in `.env` file)
+`FullIntelligenceForecast` gains:
 
-**Optional Settings**
-- `entrim_api_key`: Fallback API key from settings
-- `entrim_base_url`: Custom API base URL (default: `https://api.entrim.ai/v1`)
-- `entrim_model`: Custom model (default: `deepseek-ai/DeepSeek-V4-Flash`)
+- `rawDistribution: number[]` — the un-recalibrated mixture.
+- `distribution` — now the **calibrated** distribution (identical to the raw
+  mixture until recalibration is earned).
+- `intelligence.calibration` — `distributionActive`, `quantileActive`, `gamma`,
+  `tau`, the quantile `levels` actually used, held-out sample size, log-loss
+  raw vs calibrated, improvement %, held-out p25–p75 coverage raw vs calibrated,
+  `crash` (P(<2x) raw / calibrated / observed over the last 500 rounds),
+  `legacyCorrection`, `modeBand`, and a plain-English `reason`.
 
-### .env File Location
-- Path: `/home/admin/V6/MomentoV6/functions/.env`
-- Loaded automatically by `local-dev.mjs` via dotenv
-- Systemd backend service loads via `EnvironmentFile` directive
+The v1 fields (`rangeScale`, `agreementShift`, `tailBias`, `bandContext`,
+`candidateBias`, `collapseBias`, `ceilingAdjustment`, `candidateSpread`,
+`weightedCandidateExpected`, `empiricalCrashRate`, `baselineCrashRate`,
+`crashTrend`, `crashBias`, `modeWeight`, `hardCrashRate`, `softCrashRate`) and
+the `etaMedian` / `coneSpread` options are removed.
 
----
+## Frontend (`web-momento`)
 
-## System Services
+- Command Center: the eleven v1 tuning badges are replaced by three honest
+  chips: calibration state (with held-out log-loss gain, or `calibrating n/60`
+  / `raw mixture (recal not earned)`), P(<2x) forecast vs observed, and held-out
+  p25–p75 hit rate. The range line shows the mode band. ETA 10× and cone
+  coverage tiles are kept.
+- Ask Momento: subtitle and verdict reflect the grounding (`n citation(s)`,
+  `live data`, `general knowledge — verify`, `refused`).
+- ETA board: reads the compact intelligence summary.
+- `IntelCalibrationInfo` type added; v1 fields removed from `IntelligenceBlock`.
 
-### Systemd Units
+## Local development
 
-**momento-backend.service**
-- Port: 8000
-- Description: MomentoV6 local backend (REST API + SQLite)
-- Loads environment from `.env` file
-- Enabled for auto-start on boot
+`functions/local-dev.mjs` now actually loads `functions/.env` (the v1 docs said
+it did, but it never did) using a dependency-free parser; real environment
+variables take precedence. The unused `dotenv` dependency was removed.
 
-**momento-console.service**
-- Port: 8080
-- Description: Vite development server for web console
-- Enabled for auto-start on boot
-
-**momento-feed.service**
-- Description: File feed watcher for ~/Downloads
-- Polls every 5 seconds for new data files
-- Enabled for auto-start on boot
-
-### Service Management
+## Verification
 
 ```bash
-# Start all services
-sudo systemctl start momento-backend.service momento-console.service momento-feed.service
-
-# Stop all services
-sudo systemctl stop momento-backend.service momento-console.service momento-feed.service
-
-# Restart all services
-sudo systemctl restart momento-backend.service momento-console.service momento-feed.service
-
-# Check status
-sudo systemctl status momento-backend.service
+cd functions
+npm test                                   # node:test suite (8 tests)
+npm run predictor:backtest -- --scenario iid
+npm run predictor:backtest -- --scenario drift --seed 11
 ```
 
----
+- **Unit / property tests** (`test/predictor.test.mjs`): CDF↔quantile inverse
+  and monotone; garbage input sanitised; identity below the minimum sample;
+  well-calibrated ledgers left within TV 0.04; a miscalibrated mixture
+  corrected on unseen rounds (lower log-loss, P(<2x) moves toward truth);
+  quantile layer restores p25–p75 coverage to 50 ± 6%; forecast invariants
+  (finite, `1 ≤ lo ≤ expected ≤ hi ≤ reach`, distribution sums to 1,
+  band = band(expected), P(≥t) non-increasing) with and without a recalibrator;
+  0/1/5/30-round and constant tapes do not crash.
+- **Type check**: no new TypeScript errors vs `main` (backend); frontend clean.
+- **Workers bundle**: `wrangler deploy --dry-run` builds (520 KiB).
+- **End-to-end smoke test** (local server, 2400 synthetic rounds): ingest,
+  recalibrate, forecast, next-round, ETA board, cone, recalibration research,
+  accuracy tick (both models scheduled), overview and Ask all return 200.
 
-## API Endpoints
+### Walk-forward backtest
 
-### Intelligence Forecast
+Synthetic provably-fair crash tape (seeded), 1500 warm-up rounds, 800 scored
+rounds, every forecast built only from earlier rounds, recalibrator refitted
+every 10 rounds on resolved forecasts only. Cells are `iid (3% edge) / drift
+(edge 1–9% sinusoidal)`.
 
-**GET `/api/v1/pipeline/next-round`**
-- Returns full-intelligence next-round forecast
-- Includes dynamic range scaling and expected adjustments
-- Response includes:
-  - State, confidence, expected multiplier, range
-  - Distribution, components, horizon outlook
-  - Intelligence block with rangeScale, agreementShift, tailBias, bandContext
+| Method | p25–p75 coverage (target 0.50) | share ≤ expected (target 0.50) | pinball loss ↓ | band log-loss ↓ | P(<2x) gap ↓ |
+|---|---|---|---|---|---|
+| main (raw mixture) | 0.536 / 0.568 | 0.496 / 0.512 | 3.5701 / 2.8320 | 1.5456 / 1.5107 | 0.0037 / 0.0130 |
+| predictor v1 (multiplier stack) | 0.886 / 0.904 | 0.675 / 0.730 | 3.7249 / 3.0327 | 1.5456 / 1.5107 | 0.0037 / 0.0130 |
+| predictor v2 (this rewrite) | 0.530 / 0.542 | 0.497 / 0.502 | 3.5668 / 2.8137 | 1.5468 / 1.5015 | 0.0022 / 0.0005 |
 
-**GET `/api/v1/intelligence/forecast`**
-- Alias for `/api/v1/pipeline/next-round`
+Reading: on the i.i.d. tape the raw mixture is already calibrated and v2
+correctly leaves it alone. On the drifting tape v2 activates (γ 1, τ 1.1) and
+improves log-loss, pinball loss, coverage and the crash-rate gap (1.3% → 0.05%).
+v1 does not change the distribution (same log-loss as main) but its range and
+point estimate are badly miscalibrated, so its pinball loss is the worst of the
+three in both scenarios.
 
-**GET `/api/v1/pipeline/next-round/band`**
-- Legacy band-only forecast (for comparison)
+## Operator settings
 
-### ETA Board
+| Setting | Default | Meaning |
+|---|---|---|
+| `intel_recalibration` | `1` | `0` disables both recalibration layers |
+| `intel_recalibration_window` | `1000` | resolved forecasts used for the fit (100–3000) |
+| `intel_backtest_rounds` | `150` | rounds scored on first boot (more = recalibration earns sooner, slower boot) |
 
-**GET `/api/v1/eta/board`**
-- Returns ETA estimates with survival analysis
-- Includes intelligence context (state, confidence, expected, range)
-- Response includes:
-  - ETA median and p90 for each threshold
-  - KM percentile, pressure, hazard model data
-  - Calibration statistics
+## Configuration (unchanged)
 
-### Intelligence Cone
+- `ENTRIM_API_KEY` in `functions/.env` (git-ignored) or the environment;
+  settings `entrim_api_key`, `entrim_base_url` (default
+  `https://api.entrim.ai/v1`), `entrim_model` (default
+  `deepseek-ai/DeepSeek-V4-Flash`).
+- Systemd units `momento-backend.service` (port 8000), `momento-console.service`
+  (port 8080), `momento-feed.service`.
 
-**GET `/api/v1/intelligence/cone?h=5`**
-- Returns forecast cone with ETA markers
-- Includes full intelligence context
-- Response includes:
-  - Cone data (p25, p50, p75, p90 for h horizons)
-  - ETA markers for thresholds
-  - Coverage metrics (p25p75, belowP90)
-  - Intelligence forecast
+## Limitations
 
-### Analysis
-
-**GET `/api/v1/analysis?source=all`**
-- Returns comprehensive analysis data
-- Includes exceedance, streaks, pressure, moonshot, shape
-
-### Accuracy
-
-**GET `/api/v1/accuracy/overview`**
-- Returns accuracy engine statistics
-- Includes open predictions, Brier score, skill vs baseline
-
-**POST `/api/v1/accuracy/tick`**
-- Triggers accuracy engine tick
-- Resolves matured predictions
-- Schedules new predictions with full intelligence
-
----
-
-## Forecast Engines
-
-### Built-in Engines (8)
-
-1. **baseline** - Measured baseline (full history) - Prior: 1.0
-2. **percentile** - Empirical percentiles (recent 500) - Prior: 0.8
-3. **markov** - Markov state transitions (V5 7-state) - Prior: 0.9
-4. **dna** - DNA analogue matching - Prior: 0.7
-5. **band** - v6 band-partition model (tail-lift) - Prior: 0.9
-6. **ml** - Logistic ML ensemble - Prior: 0.6
-7. **ensemble** - v6 earned-weight per-round ensemble - Prior: 0.8
-8. **signals** - Signal layer (pressure · moonshot · ladders · FX · momentum) - Prior: 0.6
-
-### Custom Engines
-- Registered via `/api/v1/engines` POST endpoint
-- Start in "shadow" state (scored but no weight)
-- Promoted to "live" after demonstrating skill
-- Auto-demoted if skill CI drops below 0
-
-### Weight System
-- Bayesian mixture weights from trailing log-losses
-- Posterior ∝ prior · e^(-n_eff · ΔL)
-- Minimum floors: baseline 8%, all others 2%
-- Effective sample capped at n_eff = min(60, sample_size)
-
----
-
-## Data Flow
-
-### Next-Round Forecast Flow
-
-```
-1. Round History
-   ↓
-2. Full Intelligence Forecast
-   ├─ Calculate mixture from 8 engines
-   ├─ Apply ETA adjustment (if available)
-   ├─ Apply cone spread adjustment (if available)
-   ├─ Calculate confidence
-   ├─ Apply confidence-based range scaling
-   ├─ Apply agreement shift (toward top components)
-   ├─ Apply tail bias (state-dependent)
-   └─ Compute enhanced band label
-   ↓
-3. Return forecast with intelligence context
-```
-
-### Multi-Window Prediction Flow
-
-```
-1. Accuracy Tick Triggered
-   ↓
-2. Fetch Full Intelligence Forecast
-   ↓
-3. Extract Horizon Outlook Probabilities
-   ↓
-4. Calculate Window Probabilities
-   ↓
-5. Store with Full Intelligence Components
-   ↓
-6. Resolve Matured Predictions
-   ↓
-7. Update Ledger (with model name)
-```
-
-### ETA Board Flow
-
-```
-1. Round History
-   ↓
-2. Calculate Gaps Between Thresholds
-   ↓
-3. Kaplan-Meier Survival Analysis
-   ↓
-4. Hazard Model Fitting
-   ↓
-5. Fetch Full Intelligence Forecast
-   ↓
-6. Add Intelligence Context to ETA Response
-   ↓
-7. Return ETA with State/Confidence
-```
-
----
-
-## Key Concepts
-
-### Confidence Levels
-- **HIGH** (≥0.66): Demonstrated out-of-sample skill (≥3% better than baseline)
-- **MEDIUM** (0.38-0.66): Moderate conviction, calibration sample < 15 or skill < 3%
-- **LOW** (<0.38): Low conviction, insufficient calibration data
-
-### States (V5 State Machine)
-- **Normal**: Balanced market conditions
-- **Moonshot**: High tail probability, conditions building
-- **Ignition**: Early moonshot phase
-- **Collapse**: Sharp drop expected
-- **Exhaustion**: Overdue thresholds, high pressure
-- **Bait**: False signals possible
-- **Shelf**: Flat/stable period
-
-### Tail Lift
-- Measures how much the model lifts tail probabilities
-- High tail lift (>0.5): More moonshot weight
-- Low tail lift (<0.5): More conservative
-- Used in range scaling and expected adjustments
-
-### Band Exhaustion
-- Measures how overdue each threshold is
-- Status: fresh, due, overdue
-- Used in range scaling (exhausted = wider range)
-- Affects ETA calculations
-
----
-
-## Performance Considerations
-
-### Backend
-- Full intelligence forecast computed once per request
-- ETA calculations cached for duration of tick
-- Multi-window predictions scheduled per (window, threshold) pair
-- Ledger updates after each resolution
-
-### Frontend
-- Refetch intervals:
-  - Live mode: 4 seconds
-  - Normal mode: 15 seconds
-- Smooth transitions (400ms) prevent jarring updates
-- Component weight bars animate smoothly
-
-### Database
-- SQLite with SQL.js
-- All analysis functions are pure (no side effects)
-- Historical data persists across service restarts
-
----
-
-## Troubleshooting
-
-### Entrim AI Not Working
-- Check `.env` file exists in `/home/admin/V6/MomentoV6/functions/`
-- Verify `ENTRIM_API_KEY` is set correctly
-- Check systemd service logs: `sudo journalctl -u momento-backend.service -f`
-- Verify network connectivity to `https://api.entrim.ai/v1`
-
-### Forecast Not Updating
-- Check if services are running: `sudo systemctl status momento-backend.service`
-- Verify database has sufficient rounds (need ≥8 for forecast)
-- Check for errors in browser console
-- Verify accuracy tick is running (should fire every 60s)
-
-### ETA Not Showing Intelligence Context
-- Verify `intelligence` parameter is passed to `etaBoard()`
-- Check endpoint response includes `intelligence` field
-- Verify frontend type definitions are updated
-
-### Range Not Adjusting
-- Check if `rangeScale` is in intelligence response
-- Verify confidence is ≥0.05 and ≤0.95
-- Check tailLift is available from v6band
-- Verify pressure data is available
-
----
-
-## Future Enhancements
-
-### Potential Improvements
-1. Add real-time weight delta tracking between refreshes
-2. Implement confidence-based animation speed variations
-3. Add more sophisticated tail bias models
-4. Implement regime-aware weight adjustments
-5. Add custom engine performance tracking
-6. Implement forecast comparison views (full-intelligence vs band-only)
-
-### API Extensions
-1. Add `/api/v1/intelligence/components` for detailed component analysis
-2. Add `/api/v1/intelligence/history` for forecast history
-3. Add `/api/v1/intelligence/calibration` for calibration data
-4. Add streaming endpoint for real-time forecast updates
-
----
-
-## Branch Information
-
-**Branch Name**: `predictor`
-**Base Branch**: Main (assumed)
-**Remote**: `https://github.com/avfsmomentoserver-cell/MomentoV6.git`
-
-### Commits
-1. `291bb73` - Enhance Ask Momento with database context and remove citation restriction
-2. `5c9374f` - Add intelligence context to ETA predictions
-3. `953f77b` - Use full intelligence for scheduled multi-window predictions
-4. `2edacae` - Add ETA and cone predictions to Command Center
-5. `6454359` - Make Command Center forecast dynamic with confidence-driven adjustments
-
-### Status
-- All features implemented and tested
-- Backend services running successfully
-- Frontend displaying dynamic forecasts
-- API endpoints returning correct data
-- Ready for merge or further testing
-
----
-
-## Contact
-
-For questions or issues related to this branch, please refer to the project repository or contact the development team.
-
----
-
-*Documentation generated on 2026-10-01*
+- Recalibration needs evidence: with the default boot backtest (150 rounds) it
+  stays in `calibrating` / `raw mixture` until the live ledger has a few hundred
+  resolved rounds. Raise `intel_backtest_rounds` for a faster start.
+- Rounds of a provably-fair crash game are close to independent draws. No
+  calibration layer can create predictive edge; it makes the stated
+  probabilities honest. Forecasts are not betting advice.

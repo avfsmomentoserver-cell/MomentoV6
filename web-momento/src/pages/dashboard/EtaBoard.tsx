@@ -3,7 +3,7 @@ import { useState } from "react";
 import { Loading, PageHeader, Panel } from "@/components/bits";
 import { DataTable, MiniLines, Note, Verdict, ci, inputCls, pct, useV1 } from "@/components/v65/kit";
 
-type Row = { threshold: number; events: number; currentGap: number; rate: number; kmPercentile: number; pressure: number; hazardNow: number; pNext: number; pWithin10: number; etaMedian: number; etaP90: number; etaMedianAt: string; etaP90At: string; medianGap: number; memoryless: { beta1: number; lo: number; hi: number; verdict: string }; hazardModel: { beatsKM: boolean; adjustedEtaMedian: number | null }; calibration: { n: number; beforeMedian: number; target: number }; note: string; intelligence?: Record<string, unknown> };
+type Row = { threshold: number; events: number; currentGap: number; rate: number; kmPercentile: number; pressure: number; hazardNow: number; pNext: number; pWithin10: number; etaMedian: number; etaP90: number; etaMedianAt: string; etaP90At: string; medianGap: number; memoryless: { beta1: number; lo: number; hi: number; verdict: string }; hazardModel: { beatsKM: boolean; adjustedEtaMedian: number | null }; calibration: { n: number; beforeMedian: number; target: number }; note: string };
 type Board = { cadenceMs: number; generatedAt: string; lastTs: string; rows: Row[]; intelligence?: Record<string, unknown> };
 type Haz = { threshold: number; rate: number; currentGap: number; series: { g: number; hazard: number; lo: number; hi: number; atRisk: number }[] };
 type InRound = { m0: number; sample: number; rows: { target: number; law: number; empirical: number; lo: number; hi: number; secondsFromStart: number; secondsFromNow: number }[]; note: string };
