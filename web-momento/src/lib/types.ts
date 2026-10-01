@@ -630,6 +630,8 @@ export interface IntelligenceBlock {
     linguisticsMid: number;
     shapeMid: number;
     fxRegimeMid: number;
+    laddersMid: number;
+    resistanceMid: number;
   };
   /** comprehensive range adjustment layer */
   rangeAdjustments: {

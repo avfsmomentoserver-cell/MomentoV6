@@ -549,7 +549,7 @@ function jsDivergence(p: number[], q: number[]): number {
 
 // ------------------------------------------------------------------ types
 
-export const COMPONENTS = ["baseline", "percentile", "markov", "dna", "band", "ml", "ensemble", "signals", "linguistics", "shape", "fxRegime"] as const;
+export const COMPONENTS = ["baseline", "percentile", "markov", "dna", "band", "ml", "ensemble", "signals", "linguistics", "shape", "fxRegime", "ladders", "resistance"] as const;
 export type ComponentKey = (typeof COMPONENTS)[number];
 
 export const COMPONENT_LABEL: Record<ComponentKey, string> = {
@@ -564,6 +564,8 @@ export const COMPONENT_LABEL: Record<ComponentKey, string> = {
   linguistics: "Linguistic token distribution (multi-layer language model)",
   shape: "Shape projection distribution (trend/acceleration classification)",
   fxRegime: "FX regime distribution (volatility + trend + mean reversion)",
+  ladders: "Ladder pattern detection (collapse/ascend/release)",
+  resistance: "Resistance ceiling analysis (support/resistance levels)",
 };
 
 export interface IntelComponent {
@@ -687,6 +689,11 @@ export interface FullIntelligenceForecast {
     ensembleMid: number;
     signalsMid: number;
     baselineMid: number;
+    linguisticsMid: number;
+    shapeMid: number;
+    fxRegimeMid: number;
+    laddersMid: number;
+    resistanceMid: number;
   };
   // --- full intelligence ---
   intelligence: {
@@ -756,6 +763,8 @@ const PRIOR: Record<ComponentKey, number> = {
   linguistics: 0.75,
   shape: 0.65,
   fxRegime: 0.75,
+  ladders: 0.7,
+  resistance: 0.65,
 };
 
 /** Bayesian-mixture weights from trailing log-losses (posterior ∝ prior · e^(-n_eff · ΔL)). */
@@ -954,6 +963,18 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
   const mlDist = reshapeFromSurvival(baseline, ml.predictions.over2.blended, ml.predictions.over5.blended, ml.predictions.over10.blended);
   const ensembleDist = reshapeFromSurvival(baseline, per2.p, per5.p, per10.p);
 
+  // Ladder distribution: bias based on ladder type and pressure
+  const ladderTilt = ladders.currentLadder?.type === "ascend" ? 0.3 : ladders.currentLadder?.type === "collapse" ? -0.3 : 0;
+  const ladderPressure = ladders.pressureScore > 0.5 ? ladders.pressureScore * 0.2 : 0;
+  const ladderBias = clamp(ladderTilt + ladderPressure, -0.5, 0.5);
+  const ladderDist = tilt(baseline, ladderBias);
+
+  // Resistance distribution: bias toward lower bands if dominant resistance is close
+  const resistanceBias = collapseAscendResistance.resistance.dominant && collapseAscendResistance.resistance.dominant.level < 5
+    ? -0.2 * (collapseAscendResistance.resistance.dominant.touches / 10)
+    : 0;
+  const resistanceDist = tilt(baseline, clamp(resistanceBias, -0.3, 0.3));
+
   // signal layer: every directional engine votes on a band-axis tilt
   const signals: IntelSignal[] = [];
   const push = (engine: string, reading: string, direction: number, note: string) =>
@@ -988,6 +1009,8 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
     linguistics: linguisticsTokenDistribution(rounds),
     shape: shapeDistribution(rounds),
     fxRegime: fxDistribution(rounds),
+    ladders: ladderDist,
+    resistance: resistanceDist,
   };
 
   // Compute confidence for adaptive engines
@@ -1013,6 +1036,19 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
 
   const fxConfidence = (volConf + trendConf + revConf + breakoutConf) / 4;
   componentConfidence.fxRegime = Math.min(0.9, Math.max(0.1, fxConfidence));
+
+  // Ladders confidence: based on ladder count and pressure score
+  const ladderConfidence = Math.min(0.9, Math.max(0.1, ladders.ladderCount > 0
+    ? ladders.pressureScore * 0.8 + (ladders.currentLadder ? 0.2 : 0)
+    : 0.1));
+  componentConfidence.ladders = ladderConfidence;
+
+  // Resistance confidence: based on number of resistance levels and touches
+  const resistanceLevels = collapseAscendResistance.resistance.levels.length;
+  const resistanceConfidence = Math.min(0.9, Math.max(0.1, resistanceLevels > 0
+    ? Math.min(1, resistanceLevels / 5) * 0.7 + (collapseAscendResistance.resistance.dominant?.touches || 0) / 20 * 0.3
+    : 0.1));
+  componentConfidence.resistance = resistanceConfidence;
 
   // ---------- earned mixture
   const weights = earnWeights(opts.ledger);
@@ -1357,6 +1393,8 @@ export function fullIntelligenceForecast(allRounds: Round[], source: string, opt
       linguisticsMid: mid("linguistics"),
       shapeMid: mid("shape"),
       fxRegimeMid: mid("fxRegime"),
+      laddersMid: mid("ladders"),
+      resistanceMid: mid("resistance"),
     },
     rangeAdjustments,
     intelligence: {
