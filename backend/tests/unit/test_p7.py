@@ -48,7 +48,7 @@ def test_websocket_ping_pong(client):
 
 
 def test_live_push_queue():
-    """live_push puts a round event on the message queue."""
+    """live_push puts a round event on every connected client's queue."""
     from app.main import hub, live_push
     from app.core import Core
     import tempfile
@@ -58,43 +58,54 @@ def test_live_push_queue():
     db = Database(tempfile.mktemp(suffix=".db"))
     core = Core(db)
 
-    # Clear the queue
-    while not hub._messages.empty():
-        hub._messages.get()
+    # Simulate two connected clients
+    import queue
+    cid1 = hub._next_id; hub._clients[cid1] = (None, queue.Queue()); hub._next_id += 1
+    cid2 = hub._next_id; hub._clients[cid2] = (None, queue.Queue()); hub._next_id += 1
 
     live_push(core, "round", {"source": "test-src", "inserted": 5, "origin": "observed"})
 
-    import queue
-    try:
-        msg = hub._messages.get(timeout=1.0)
-        assert msg["event"] == "round"
-        assert msg["data"]["source"] == "test-src"
-        assert msg["data"]["inserted"] == 5
-        assert "ts" in msg
-    except queue.Empty:
-        assert False, "No message on queue after live_push"
+    # Both clients should receive the message
+    for cid in (cid1, cid2):
+        try:
+            msg = hub.get_message(cid, timeout=1.0)
+            assert msg is not None, f"client {cid} got no message"
+            assert msg["event"] == "round"
+            assert msg["data"]["source"] == "test-src"
+            assert msg["data"]["inserted"] == 5
+            assert "ts" in msg
+        except Exception:
+            assert False, f"client {cid} failed to get message"
+
+    # Clean up
+    hub.disconnect(cid1)
+    hub.disconnect(cid2)
 
 
 def test_websocket_drain():
-    """WebSocket handler's drain method sends queued messages to clients."""
-    import json, asyncio
+    """Per-client queue drain mechanism works correctly."""
     from app.main import hub
+    import queue
 
-    # Push a message to the queue
+    # Simulate a connected client
+    cid = hub._next_id; hub._clients[cid] = (None, queue.Queue()); hub._next_id += 1
+
+    # Push a message
     hub.push({"event": "round", "data": {"source": "drain-test", "inserted": 7}, "ts": 12345})
 
-    # Verify the message is on the queue
-    assert not hub._messages.empty()
-
-    # Drain it (simulates what the WebSocket handler does)
-    msg = hub._messages.get_nowait()
+    # Drain it
+    msg = hub.get_message(cid, timeout=0.5)
+    assert msg is not None, "No message drained"
     assert msg["event"] == "round"
     assert msg["data"]["source"] == "drain-test"
     assert msg["data"]["inserted"] == 7
     assert msg["ts"] == 12345
 
     # Queue should now be empty
-    assert hub._messages.empty()
+    assert hub.get_message(cid, timeout=0.1) is None
+
+    # Clean up
+    hub.disconnect(cid)
 
 
 def test_collectors_cli_compiles():

@@ -127,7 +127,7 @@ Request → CORS → as_of middleware (sets a context var) → auth dependency (
 | **P5** ✅ | Proof + Lab: accuracy ledger and hash chain, decisions, alerts, engines registry, workbench, experiments, backtests, deep jobs, simulate, seed, reconstruct | Contract test: all 205 routes return a valid envelope |
 | **P6** ✅ | Operate: orchestrator (core modules + `/orchestrator/settings`), autopilot, inventory plugins, knowledge/ask, AI summary; `momento_core` experts registered as gated candidate engines | Orchestrator, autopilot and inventory pages work; the gate table lists the new candidates |
 | **P7** ✅ | Scheduler, jobs, optional WebSocket `/live` (Ch 16 protocol), collectors CLI, deploy (Docker, systemd), docs | Live smoke: 3,000-round ingest, forecast p95 < 250 ms in-process, all frontend endpoints 200 |
-| **P8** ✅ | Evidence: walk-forward backtests (iid, drift) and the gate verdict for every candidate engine; honest results table in the docs | Report committed |
+| **P8** ✅ | Evidence: chronological calibration gate evidence (iid, drift) and the gate verdict for every candidate engine; honest results table in the docs | Report committed |
 
 ### 5.1 Progress notes and deviations (kept current)
 
@@ -141,7 +141,7 @@ Request → CORS → as_of middleware (sets a context var) → auth dependency (
 - **Still open:** none — P6, P7 and P8 are complete. Deploy files (`backend/deploy/`) and the scheduler are in.
 - **P6 (done):** 7 momento_core experts (percentile, crash prediction, ML, signal hunter, band exhaustion, collapse ceiling, gap swing) registered as shadow candidate engines via `Core.extra_candidates` (`momento/candidates.py`). Candidates appear in `gated_registry().extras`, flow through calibration `comp_loss`, and receive gate verdicts (admit/exclude). Controlled by `MOMENTO_CANDIDATES` env var or `momento_core_candidates` setting. **Note:** orchestrator and autopilot routes use heuristic guidance functions (ported from the archive), not the vendored `momento_core.orchestrator` modules directly. Route compatibility is complete; deep integration of `momento_core.orchestrator` (risk_manager, execution_planner, mistake_prevention_engine) is intentionally deferred — the heuristic guidance produces the same route responses the frontend expects.
 - **P7 (done):** WebSocket `/live` endpoint added (`app/main.py`) — thin push channel (Ch 16 protocol) that sends `hello` on connect, `round` events on ingest, and `pong` on ping. Does not break polling. Collectors CLI (`app/collectors.py`) reads JSON/CSV files or watches a directory and posts to `/api/v1/ingest`.
-- **P8 (done):** Walk-forward backtests on iid and drift synthetic tapes (`momento/evidence.py`). Honest results: no candidate admitted on iid (expected — no signal in random data). Report committed to `docs/markdown/evidence-report.md`.
+- **P8 (done):** Chronological calibration gate evidence on iid and drift synthetic tapes (`momento/evidence.py`). Gate verdicts are from real `intel_calibrations.comp_loss` rows, not synthetic walk-forward. No candidate admitted on iid data (honest result). Report committed to `docs/markdown/evidence-report.md`.
 
 ## 6. Testing
 

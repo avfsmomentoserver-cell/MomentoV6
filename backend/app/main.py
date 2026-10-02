@@ -121,38 +121,45 @@ app = FastAPI(title="Momento backend", version="6.5.0", lifespan=lifespan, docs_
 class LiveHub:
     """Tracks connected WebSocket clients and broadcasts live updates.
 
-    Uses a thread-safe queue for messages so that the ingest thread (which runs
-    in a thread pool) can push messages without needing the event loop.  The
-    WebSocket handler polls the queue with a timeout.
+    Uses per-client queues so one client consuming a message does not deprive
+    others.  The ingest thread (in a thread pool) pushes to every client's
+    queue (thread-safe, non-blocking).
     """
 
     def __init__(self):
         import queue
-        self._clients: list[WebSocket] = []
-        self._messages: queue.Queue = queue.Queue()
+        self._clients: dict[int, tuple[WebSocket, queue.Queue]] = {}
+        self._next_id = 0
 
-    async def connect(self, ws: WebSocket) -> None:
+    async def connect(self, ws: WebSocket) -> int:
         await ws.accept()
-        self._clients.append(ws)
-        log.info("live client connected (%d total)", len(self._clients))
+        import queue
+        cid = self._next_id
+        self._next_id += 1
+        self._clients[cid] = (ws, queue.Queue())
+        log.info("live client %d connected (%d total)", cid, len(self._clients))
+        return cid
 
-    def disconnect(self, ws: WebSocket) -> None:
-        if ws in self._clients:
-            self._clients.remove(ws)
-        log.info("live client disconnected (%d total)", len(self._clients))
+    def disconnect(self, cid: int) -> None:
+        if cid in self._clients:
+            del self._clients[cid]
+        log.info("live client %d disconnected (%d total)", cid, len(self._clients))
 
     def push(self, message: dict) -> None:
-        """Push a message to the queue (thread-safe, non-blocking)."""
-        self._messages.put(message)
+        """Push a message to every client's queue (thread-safe, non-blocking)."""
+        for cid, (ws, q) in self._clients.items():
+            try:
+                q.put_nowait(message)
+            except Exception:
+                pass  # queue full — drop message for this client
 
-    async def drain(self, ws: WebSocket, timeout: float = 1.0) -> dict | None:
-        """Drain one message from the queue and send it to a specific client."""
+    def get_message(self, cid: int, timeout: float = 0.1):
+        """Get a message from a specific client's queue (thread-safe)."""
+        if cid not in self._clients:
+            return None
         import queue
         try:
-            msg = self._messages.get(timeout=timeout)
-            import json as _json
-            await ws.send_text(_json.dumps(msg, default=str))
-            return msg
+            return self._clients[cid][1].get(timeout=timeout)
         except queue.Empty:
             return None
 
@@ -161,14 +168,14 @@ class LiveHub:
         import json as _json
         payload = _json.dumps(message, default=str)
         dead = []
-        for ws in self._clients:
+        for cid, (ws, q) in self._clients.items():
             try:
                 if ws.client_state == WebSocketState.CONNECTED:
                     await ws.send_text(payload)
             except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.disconnect(ws)
+                dead.append(cid)
+        for cid in dead:
+            self.disconnect(cid)
 
 
 hub = LiveHub()
@@ -195,7 +202,7 @@ async def live_ws(ws: WebSocket) -> None:
     Subsequently pushes ``round`` events on ingest (source, inserted count).
     Responds to ``ping`` with ``pong``.
     """
-    await hub.connect(ws)
+    cid = await hub.connect(ws)
     try:
         # Send initial state
         core = State.core
@@ -212,16 +219,13 @@ async def live_ws(ws: WebSocket) -> None:
             }
             import json as _json
             await ws.send_text(_json.dumps(hello, default=str))
-        # Keep connection alive; drain pushed messages and handle ping/pong
-        import queue
+        # Keep connection alive; drain per-client queue and handle ping/pong
         while True:
-            # Check for pushed messages first (non-blocking)
-            try:
-                msg = hub._messages.get_nowait()
+            # Check for pushed messages (non-blocking)
+            msg = hub.get_message(cid, timeout=0.0)
+            if msg is not None:
                 import json as _json
                 await ws.send_text(_json.dumps(msg, default=str))
-            except queue.Empty:
-                pass
             # Wait for client messages (ping/pong) with a short timeout
             try:
                 client_msg = await asyncio.wait_for(ws.receive_text(), timeout=0.1)
@@ -231,9 +235,9 @@ async def live_ws(ws: WebSocket) -> None:
             except asyncio.TimeoutError:
                 continue  # no client message; loop and check for pushed messages
     except WebSocketDisconnect:
-        hub.disconnect(ws)
+        hub.disconnect(cid)
     except Exception:
-        hub.disconnect(ws)
+        hub.disconnect(cid)
 
 
 def to_response(res: Resp, cors: dict) -> Response:
