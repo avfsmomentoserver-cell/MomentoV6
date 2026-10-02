@@ -56,24 +56,58 @@ def _point_to_dist(point: float, multipliers: list[float], concentration: float 
     return [(0.7 * out[i] / s + 0.3 * base[i]) for i in range(NB)]
 
 
+# Epsilon for detecting no-op candidates (prediction identical to baseline)
+_NOOP_EPS = 1e-9
+
+
+def _is_noop(dist: list[float], baseline: list[float]) -> bool:
+    """Check if a candidate distribution is effectively identical to the baseline.
+
+    No-op candidates (those that fell back to empirical) must not be admitted
+    by the gate, because including an identical distribution with a small
+    prior weight can produce a spurious positive gain from weight
+    redistribution.  When detected, the caller should return a flat
+    distribution instead, which the gate will correctly exclude.
+    """
+    if len(dist) != len(baseline):
+        return False
+    return all(abs(d - b) < _NOOP_EPS for d, b in zip(dist, baseline))
+
+
+def _flat_dist() -> list[float]:
+    """Uniform distribution — guaranteed to be excluded by the gate."""
+    return [1.0 / NB] * NB
+
+
+def _finalize_predict(dist: list[float], ms: list[float]) -> list[float]:
+    """Post-process a candidate prediction.
+
+    If the prediction is a no-op (identical to empirical baseline), return a
+    flat distribution so the gate correctly excludes it rather than seeing a
+    spurious gain from weight redistribution.
+    """
+    if not dist or len(dist) != NB:
+        return _empirical(ms)
+    baseline = _empirical(ms)
+    if _is_noop(dist, baseline):
+        return _flat_dist()
+    return dist
+
+
 def _recent_ms(rounds) -> list[float]:
     return [r.multiplier for r in rounds if r.origin != "reconstructed"][-WINDOW:]
 
 
-# Per-provider cache keyed by a fingerprint of the passed rds window —
-# NOT by core.rounds_for(None).  Maintains purity while avoiding redundant
-# computation.  The fingerprint includes round count, first/last multiplier,
-# and a hash of the last 20 multipliers to distinguish different tapes.
+# Per-provider cache keyed by a full fingerprint of the passed rds window —
+# NOT by core.rounds_for(None).  Uses the full tuple of recent multipliers
+# (rounded to 4 dp) so two different windows with the same length and last
+# value but different middle rounds never collide.
 _cache: dict[str, tuple[Any, Any]] = {}
 
 
 def _fingerprint(rounds) -> tuple:
     ms = _recent_ms(rounds)
-    n = len(ms)
-    last = ms[-1] if ms else 0.0
-    first = ms[0] if ms else 0.0
-    tail = tuple(ms[-20:])  # last 20 multipliers as a tuple
-    return (n, first, last, hash(tail))
+    return (len(ms), tuple(round(m, 4) for m in ms))
 
 
 def _cached(key: str, rounds, fn: Callable) -> Any:
@@ -118,7 +152,7 @@ def percentile_provider(core) -> list[dict]:
     if len(core.rounds_for(None)) < 60:
         return []
     def predict(rds):
-        return _cached("mc_percentile", rds, lambda: _percentile_predict(rds))
+        return _cached("mc_percentile", rds, lambda: _finalize_predict(_percentile_predict(rds), _recent_ms(rds)))
     return [{"key": "mc_percentile", "label": "Rolling percentile (momento_core)", "prior": 0.3, "predict": predict}]
 
 
@@ -157,7 +191,7 @@ def crash_prediction_provider(core) -> list[dict]:
     if len(core.rounds_for(None)) < 80:
         return []
     def predict(rds):
-        return _cached("mc_crash", rds, lambda: _crash_predict(rds))
+        return _cached("mc_crash", rds, lambda: _finalize_predict(_crash_predict(rds), _recent_ms(rds)))
     return [{"key": "mc_crash", "label": "Crash prediction engine (momento_core)", "prior": 0.25, "predict": predict}]
 
 
@@ -195,7 +229,7 @@ def ml_provider(core) -> list[dict]:
     if len(core.rounds_for(None)) < 200:
         return []
     def predict(rds):
-        return _cached("mc_ml", rds, lambda: _ml_predict(rds))
+        return _cached("mc_ml", rds, lambda: _finalize_predict(_ml_predict(rds), _recent_ms(rds)))
     return [{"key": "mc_ml", "label": "ML next-round (momento_core, sklearn)", "prior": 0.2, "predict": predict}]
 
 
@@ -251,7 +285,7 @@ def signal_hunter_provider(core) -> list[dict]:
     if len(core.rounds_for(None)) < 80:
         return []
     def predict(rds):
-        return _cached("mc_signals", rds, lambda: _signal_hunter_predict(rds))
+        return _cached("mc_signals", rds, lambda: _finalize_predict(_signal_hunter_predict(rds), _recent_ms(rds)))
     return [{"key": "mc_signals", "label": "Signal hunter (momento_core)", "prior": 0.2, "predict": predict}]
 
 
@@ -297,7 +331,7 @@ def band_exhaustion_provider(core) -> list[dict]:
     if len(core.rounds_for(None)) < 100:
         return []
     def predict(rds):
-        return _cached("mc_band_exhaust", rds, lambda: _band_exhaustion_predict(rds))
+        return _cached("mc_band_exhaust", rds, lambda: _finalize_predict(_band_exhaustion_predict(rds), _recent_ms(rds)))
     return [{"key": "mc_band_exhaust", "label": "Band exhaustion (momento_core)", "prior": 0.2, "predict": predict}]
 
 
@@ -339,7 +373,7 @@ def collapse_ceiling_provider(core) -> list[dict]:
     if len(core.rounds_for(None)) < 80:
         return []
     def predict(rds):
-        return _cached("mc_ceiling", rds, lambda: _collapse_ceiling_predict(rds))
+        return _cached("mc_ceiling", rds, lambda: _finalize_predict(_collapse_ceiling_predict(rds), _recent_ms(rds)))
     return [{"key": "mc_ceiling", "label": "Collapse ceiling (momento_core)", "prior": 0.2, "predict": predict}]
 
 
@@ -381,7 +415,7 @@ def gap_swing_provider(core) -> list[dict]:
     if len(core.rounds_for(None)) < 80:
         return []
     def predict(rds):
-        return _cached("mc_gap_swing", rds, lambda: _gap_swing_predict(rds))
+        return _cached("mc_gap_swing", rds, lambda: _finalize_predict(_gap_swing_predict(rds), _recent_ms(rds)))
     return [{"key": "mc_gap_swing", "label": "Gap swing (momento_core)", "prior": 0.2, "predict": predict}]
 
 

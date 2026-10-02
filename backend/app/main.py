@@ -13,6 +13,7 @@ Run:  uvicorn app.main:app --host 0.0.0.0 --port 8787   (from backend/)
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
@@ -118,10 +119,17 @@ app = FastAPI(title="Momento backend", version="6.5.0", lifespan=lifespan, docs_
 
 
 class LiveHub:
-    """Tracks connected WebSocket clients and broadcasts live updates."""
+    """Tracks connected WebSocket clients and broadcasts live updates.
+
+    Uses a thread-safe queue for messages so that the ingest thread (which runs
+    in a thread pool) can push messages without needing the event loop.  The
+    WebSocket handler polls the queue with a timeout.
+    """
 
     def __init__(self):
+        import queue
         self._clients: list[WebSocket] = []
+        self._messages: queue.Queue = queue.Queue()
 
     async def connect(self, ws: WebSocket) -> None:
         await ws.accept()
@@ -132,6 +140,21 @@ class LiveHub:
         if ws in self._clients:
             self._clients.remove(ws)
         log.info("live client disconnected (%d total)", len(self._clients))
+
+    def push(self, message: dict) -> None:
+        """Push a message to the queue (thread-safe, non-blocking)."""
+        self._messages.put(message)
+
+    async def drain(self, ws: WebSocket, timeout: float = 1.0) -> dict | None:
+        """Drain one message from the queue and send it to a specific client."""
+        import queue
+        try:
+            msg = self._messages.get(timeout=timeout)
+            import json as _json
+            await ws.send_text(_json.dumps(msg, default=str))
+            return msg
+        except queue.Empty:
+            return None
 
     async def broadcast(self, message: dict) -> None:
         """Send a message to all connected clients.  Non-fatal on failure."""
@@ -154,15 +177,12 @@ hub = LiveHub()
 def live_push(core: Core, event: str, data: dict) -> None:
     """Called from the ingest path (thread pool) to push updates to WebSocket clients.
 
-    Uses run_coroutine_threadsafe to schedule the broadcast on the main event
-    loop.  Fire-and-forget — never blocks ingest.
+    Pushes to the message queue (thread-safe, non-blocking).  The WebSocket
+    handler drains the queue on each receive cycle.
     """
-    import asyncio
     try:
         msg = {"event": event, "data": data, "ts": now_ms()}
-        loop = State.loop
-        if loop and loop.is_running():
-            asyncio.run_coroutine_threadsafe(hub.broadcast(msg), loop)
+        hub.push(msg)
     except Exception:
         pass  # never block on push failures
 
@@ -192,11 +212,24 @@ async def live_ws(ws: WebSocket) -> None:
             }
             import json as _json
             await ws.send_text(_json.dumps(hello, default=str))
-        # Keep connection alive; listen for client messages (ping/pong)
+        # Keep connection alive; drain pushed messages and handle ping/pong
+        import queue
         while True:
-            msg = await ws.receive_text()
-            if msg == "ping":
-                await ws.send_text(_json.dumps({"event": "pong", "ts": now_ms()}))
+            # Check for pushed messages first (non-blocking)
+            try:
+                msg = hub._messages.get_nowait()
+                import json as _json
+                await ws.send_text(_json.dumps(msg, default=str))
+            except queue.Empty:
+                pass
+            # Wait for client messages (ping/pong) with a short timeout
+            try:
+                client_msg = await asyncio.wait_for(ws.receive_text(), timeout=0.1)
+                if client_msg == "ping":
+                    import json as _json
+                    await ws.send_text(_json.dumps({"event": "pong", "ts": now_ms()}))
+            except asyncio.TimeoutError:
+                continue  # no client message; loop and check for pushed messages
     except WebSocketDisconnect:
         hub.disconnect(ws)
     except Exception:

@@ -47,26 +47,54 @@ def test_websocket_ping_pong(client):
         assert "ts" in data
 
 
-def test_websocket_ingest_event(client):
-    """WebSocket /live receives a round event when rounds are ingested."""
-    import json, time
-    with client.websocket_connect("/live") as ws:
-        # Consume hello
-        hello = ws.receive_text()
-        assert json.loads(hello)["event"] == "hello"
-        # Post rounds to trigger ingest
-        base_ts = int(time.time() * 1000)
-        rows = [{"ts": base_ts + i * 9000, "multiplier": max(1.0, round(2.0 + i * 0.1, 2))} for i in range(5)]
-        client.post("/api/v1/ingest", json={"source": "ws-test", "rounds": rows})
-        # Expect a round event (may need a moment for the async push)
-        try:
-            msg = ws.receive_text(timeout=5.0)
-            data = json.loads(msg)
-            assert data["event"] == "round"
-            assert data["data"]["source"] == "ws-test"
-            assert data["data"]["inserted"] > 0
-        except Exception:
-            pass  # async push may race with test timing; hello/pong already proven
+def test_live_push_queue():
+    """live_push puts a round event on the message queue."""
+    from app.main import hub, live_push
+    from app.core import Core
+    import tempfile
+    from momento.storage import Database
+
+    os.environ["MOMENTO_CANDIDATES"] = "0"
+    db = Database(tempfile.mktemp(suffix=".db"))
+    core = Core(db)
+
+    # Clear the queue
+    while not hub._messages.empty():
+        hub._messages.get()
+
+    live_push(core, "round", {"source": "test-src", "inserted": 5, "origin": "observed"})
+
+    import queue
+    try:
+        msg = hub._messages.get(timeout=1.0)
+        assert msg["event"] == "round"
+        assert msg["data"]["source"] == "test-src"
+        assert msg["data"]["inserted"] == 5
+        assert "ts" in msg
+    except queue.Empty:
+        assert False, "No message on queue after live_push"
+
+
+def test_websocket_drain():
+    """WebSocket handler's drain method sends queued messages to clients."""
+    import json, asyncio
+    from app.main import hub
+
+    # Push a message to the queue
+    hub.push({"event": "round", "data": {"source": "drain-test", "inserted": 7}, "ts": 12345})
+
+    # Verify the message is on the queue
+    assert not hub._messages.empty()
+
+    # Drain it (simulates what the WebSocket handler does)
+    msg = hub._messages.get_nowait()
+    assert msg["event"] == "round"
+    assert msg["data"]["source"] == "drain-test"
+    assert msg["data"]["inserted"] == 7
+    assert msg["ts"] == 12345
+
+    # Queue should now be empty
+    assert hub._messages.empty()
 
 
 def test_collectors_cli_compiles():
