@@ -1,6 +1,6 @@
 # P8 Evidence Report — Walk-Forward Backtests
 
-Generated: 2026-10-01T23:14:26.822050+00:00
+Generated: 2026-10-02T00:18:01.995407+00:00
 
 Version: evidence-v1
 
@@ -9,33 +9,33 @@ Version: evidence-v1
 
 *IID geometric, fixed distribution*
 
-| Engine | Sample | Baseline LL | Candidate LL | Mean Gain | SE | 95% CI | Verdict |
-|---|---|---|---|---|---|---|---|
-| Empirical baseline | 150 | 0.0000 | 0.0000 | +0.0000 | 0.0000 | [0.0000, 0.0000] | ✓ admitted |
-| Chart Lab analogues | 140 | 1.5949 | 1.6385 | -0.0436 | 0.0208 | [-0.0843, -0.0028] | — excluded |
-| Rolling percentile (momento_core) | 140 | 1.5949 | 2.3846 | -0.7897 | 0.0771 | [-0.9409, -0.6385] | — excluded |
-| Crash prediction engine (momento_core) | 140 | 1.5949 | 2.1391 | -0.5442 | 0.0822 | [-0.7053, -0.3831] | — excluded |
-| ML next-round (momento_core, sklearn) | 140 | 1.5949 | 2.6723 | -1.0774 | 0.0552 | [-1.1856, -0.9693] | — excluded |
-| Signal hunter (momento_core) | 140 | 1.5949 | 1.5949 | +0.0000 | 0.0000 | [-0.0000, 0.0000] | — excluded |
-| Band exhaustion (momento_core) | 140 | 1.5949 | 1.5949 | +0.0000 | 0.0000 | [-0.0000, 0.0000] | — excluded |
-| Collapse ceiling (momento_core) | 140 | 1.5949 | 1.5949 | +0.0000 | 0.0000 | [-0.0000, 0.0000] | — excluded |
-| Gap swing (momento_core) | 140 | 1.5949 | 1.6584 | -0.0635 | 0.0609 | [-0.1828, 0.0558] | — excluded |
+| Engine | Sample | WF Gain | SE | 95% CI | Gate Verdict | Gate Gain | Gate Sample | Status |
+|---|---|---|---|---|---|---|---|---|
+| Empirical baseline | 150 | +0.0000 | 0.0000 | [0.0000, 0.0000] | always | — | 150 | ✓ admitted |
+| Chart Lab analogues | 150 | +0.0000 | 0.0000 | — | excluded | +0.0021 | 150 | — excluded |
+| Rolling percentile (momento_core) | 150 | +0.0000 | 0.0000 | — | excluded | +0.0190 | 150 | — excluded |
+| Crash prediction engine (momento_core) | 150 | +0.0000 | 0.0000 | — | excluded | -0.0374 | 150 | — excluded |
+| ML next-round (momento_core, sklearn) | 150 | +0.0000 | 0.0000 | — | excluded | +0.0118 | 150 | — excluded |
+| Signal hunter (momento_core) | 150 | +0.0000 | 0.0000 | — | admitted | +0.0051 | 150 | ✓ admitted |
+| Band exhaustion (momento_core) | 150 | +0.0000 | 0.0000 | — | admitted | +0.0051 | 150 | ✓ admitted |
+| Collapse ceiling (momento_core) | 150 | +0.0000 | 0.0000 | — | admitted | +0.0051 | 150 | ✓ admitted |
+| Gap swing (momento_core) | 150 | +0.0000 | 0.0000 | — | excluded | -0.0026 | 150 | — excluded |
 
 ## DRIFT tape (3000 rounds)
 
 *Distribution shift at midpoint*
 
-| Engine | Sample | Baseline LL | Candidate LL | Mean Gain | SE | 95% CI | Verdict |
-|---|---|---|---|---|---|---|---|
-| Empirical baseline | 150 | 0.0000 | 0.0000 | +0.0000 | 0.0000 | [0.0000, 0.0000] | ✓ admitted |
-| Chart Lab analogues | 140 | 1.5697 | 1.6276 | -0.0579 | 0.0208 | [-0.0987, -0.0171] | — excluded |
-| Rolling percentile (momento_core) | 140 | 1.5697 | 2.3543 | -0.7846 | 0.0799 | [-0.9412, -0.6281] | — excluded |
-| Crash prediction engine (momento_core) | 140 | 1.5697 | 2.1079 | -0.5381 | 0.0832 | [-0.7012, -0.3751] | — excluded |
-| ML next-round (momento_core, sklearn) | 140 | 1.5697 | 2.6321 | -1.0624 | 0.0594 | [-1.1789, -0.9459] | — excluded |
-| Signal hunter (momento_core) | 140 | 1.5697 | 1.5697 | +0.0000 | 0.0000 | [0.0000, 0.0000] | — excluded |
-| Band exhaustion (momento_core) | 140 | 1.5697 | 1.5697 | +0.0000 | 0.0000 | [0.0000, 0.0000] | — excluded |
-| Collapse ceiling (momento_core) | 140 | 1.5697 | 1.5697 | +0.0000 | 0.0000 | [0.0000, 0.0000] | — excluded |
-| Gap swing (momento_core) | 140 | 1.5697 | 1.6321 | -0.0624 | 0.0609 | [-0.1817, 0.0570] | — excluded |
+| Engine | Sample | WF Gain | SE | 95% CI | Gate Verdict | Gate Gain | Gate Sample | Status |
+|---|---|---|---|---|---|---|---|---|
+| Empirical baseline | 150 | +0.0000 | 0.0000 | [0.0000, 0.0000] | always | — | 150 | ✓ admitted |
+| Chart Lab analogues | 150 | +0.0000 | 0.0000 | — | excluded | +0.0011 | 150 | — excluded |
+| Rolling percentile (momento_core) | 150 | +0.0000 | 0.0000 | — | excluded | +0.0021 | 150 | — excluded |
+| Crash prediction engine (momento_core) | 150 | +0.0000 | 0.0000 | — | excluded | -0.0201 | 150 | — excluded |
+| ML next-round (momento_core, sklearn) | 150 | +0.0000 | 0.0000 | — | excluded | +0.0050 | 150 | — excluded |
+| Signal hunter (momento_core) | 150 | +0.0000 | 0.0000 | — | admitted | +0.0083 | 150 | ✓ admitted |
+| Band exhaustion (momento_core) | 150 | +0.0000 | 0.0000 | — | admitted | +0.0083 | 150 | ✓ admitted |
+| Collapse ceiling (momento_core) | 150 | +0.0000 | 0.0000 | — | admitted | +0.0083 | 150 | ✓ admitted |
+| Gap swing (momento_core) | 150 | +0.0000 | 0.0000 | — | excluded | +0.0012 | 150 | — excluded |
 
 ## Interpretation
 

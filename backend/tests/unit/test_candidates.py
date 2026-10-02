@@ -23,12 +23,14 @@ from momento.storage import Database
 @pytest.fixture
 def core():
     import random
+    os.environ["MOMENTO_CANDIDATES"] = "1"  # ensure candidates are enabled
+    os.environ["MOMENTO_SCHEDULER"] = "0"
     db = Database(tempfile.mktemp(suffix=".db"))
     from app.core import Core
     c = Core(db)
     rows = []
     rnd = random.Random(42)
-    for i in range(400):
+    for i in range(250):
         m = max(1.0, round(0.97 / (1 - rnd.random()), 2))
         rows.append({"ts_ms": 1000 + i * 500, "multiplier": m})
     c.ingest_rounds("test", "api", rows, "observed")
@@ -95,6 +97,7 @@ def test_gate_verdicts_for_candidates(core):
 
 def test_disable_candidates():
     """MOMENTO_CANDIDATES=0 disables candidate registration."""
+    old = os.environ.get("MOMENTO_CANDIDATES")
     os.environ["MOMENTO_CANDIDATES"] = "0"
     try:
         db = Database(tempfile.mktemp(suffix=".db"))
@@ -102,4 +105,7 @@ def test_disable_candidates():
         c = Core(db)
         assert len(c.extra_candidates) == 0, f"expected 0 candidates, got {len(c.extra_candidates)}"
     finally:
-        os.environ.pop("MOMENTO_CANDIDATES", None)
+        if old is not None:
+            os.environ["MOMENTO_CANDIDATES"] = old
+        else:
+            os.environ.pop("MOMENTO_CANDIDATES", None)

@@ -76,6 +76,7 @@ def client():
     os.environ["MOMENTO_DB"] = tempfile.mktemp(suffix=".db")
     os.environ["MOMENTO_SCHEDULER"] = "0"
     os.environ["MOMENTO_INGEST_INTEL_BUDGET"] = "5"
+    os.environ["MOMENTO_CANDIDATES"] = "0"  # candidates tested separately; keep contract tests fast
     from fastapi.testclient import TestClient
 
     from app.main import app

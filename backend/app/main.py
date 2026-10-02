@@ -83,6 +83,13 @@ def build_core() -> Core:
     # boot without the (potentially long) intel backtest; the scheduler drains it
     core = Core(Database(db_path()), calibrate_on_boot=False)
     core.ingest_intel_budget = int(os.environ.get("MOMENTO_INGEST_INTEL_BUDGET") or 10)
+    # P7: wire WebSocket /live push via ingest_listeners (avoids circular import)
+    def _live_push(source, inserted, origin):
+        try:
+            live_push(core, "round", {"source": source, "inserted": inserted, "origin": origin})
+        except Exception:
+            pass
+    core.ingest_listeners.append(_live_push)
     log.info("momento core ready in %.2fs (db=%s)", time.time() - t0, db_path())
     return core
 
