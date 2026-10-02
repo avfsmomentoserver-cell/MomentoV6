@@ -172,8 +172,8 @@ async def live_ws(ws: WebSocket) -> None:
     """WebSocket /live — optional push channel (Ch 16 protocol).
 
     On connect, sends an initial ``hello`` with the current state.
-    Subsequently pushes ``round`` events on ingest and ``forecast`` events
-    when the forecast is recomputed.
+    Subsequently pushes ``round`` events on ingest (source, inserted count).
+    Responds to ``ping`` with ``pong``.
     """
     await hub.connect(ws)
     try:

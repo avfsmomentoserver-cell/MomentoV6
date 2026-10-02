@@ -60,20 +60,29 @@ def _recent_ms(rounds) -> list[float]:
     return [r.multiplier for r in rounds if r.origin != "reconstructed"][-WINDOW:]
 
 
-# Per-provider cache keyed by (round_count, last_multiplier) — NOT by
-# core.rounds_for(None).  Maintains purity while avoiding redundant computation.
-_cache: dict[str, tuple[int, float, Any]] = {}
+# Per-provider cache keyed by a fingerprint of the passed rds window —
+# NOT by core.rounds_for(None).  Maintains purity while avoiding redundant
+# computation.  The fingerprint includes round count, first/last multiplier,
+# and a hash of the last 20 multipliers to distinguish different tapes.
+_cache: dict[str, tuple[Any, Any]] = {}
 
 
-def _cached(key: str, rounds, fn: Callable) -> Any:
+def _fingerprint(rounds) -> tuple:
     ms = _recent_ms(rounds)
     n = len(ms)
     last = ms[-1] if ms else 0.0
+    first = ms[0] if ms else 0.0
+    tail = tuple(ms[-20:])  # last 20 multipliers as a tuple
+    return (n, first, last, hash(tail))
+
+
+def _cached(key: str, rounds, fn: Callable) -> Any:
+    fp = _fingerprint(rounds)
     entry = _cache.get(key)
-    if entry and abs(n - entry[0]) < 20 and abs(last - entry[1]) < 0.01:
-        return entry[2]
+    if entry and entry[0] == fp:
+        return entry[1]
     val = fn()
-    _cache[key] = (n, last, val)
+    _cache[key] = (fp, val)
     return val
 
 

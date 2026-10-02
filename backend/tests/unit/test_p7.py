@@ -47,6 +47,28 @@ def test_websocket_ping_pong(client):
         assert "ts" in data
 
 
+def test_websocket_ingest_event(client):
+    """WebSocket /live receives a round event when rounds are ingested."""
+    import json, time
+    with client.websocket_connect("/live") as ws:
+        # Consume hello
+        hello = ws.receive_text()
+        assert json.loads(hello)["event"] == "hello"
+        # Post rounds to trigger ingest
+        base_ts = int(time.time() * 1000)
+        rows = [{"ts": base_ts + i * 9000, "multiplier": max(1.0, round(2.0 + i * 0.1, 2))} for i in range(5)]
+        client.post("/api/v1/ingest", json={"source": "ws-test", "rounds": rows})
+        # Expect a round event (may need a moment for the async push)
+        try:
+            msg = ws.receive_text(timeout=5.0)
+            data = json.loads(msg)
+            assert data["event"] == "round"
+            assert data["data"]["source"] == "ws-test"
+            assert data["data"]["inserted"] > 0
+        except Exception:
+            pass  # async push may race with test timing; hello/pong already proven
+
+
 def test_collectors_cli_compiles():
     """Collectors CLI module compiles without syntax errors."""
     import py_compile

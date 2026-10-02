@@ -276,29 +276,28 @@ def format_report_text(report: dict) -> str:
         entries = report["results"][tape_name]
         lines.append(f"\n## {tape_name.upper()} tape ({tape['rounds']} rounds)\n")
         lines.append(f"*{tape['description']}*\n")
-        lines.append("| Engine | Sample | WF Gain | SE | 95% CI | Gate Verdict | Gate Gain | Gate Sample | Status |")
-        lines.append("|---|---|---|---|---|---|---|---|---|")
+        lines.append("| Engine | Gate Sample | Gate Verdict | Gate Gain | Gate SE | Status |")
+        lines.append("|---|---|---|---|---|---|")
         for e in entries:
-            ci = e.get("ci95")
-            ci_str = f"[{ci[0]:.4f}, {ci[1]:.4f}]" if ci else "—"
-            gain = e.get("meanGain")
-            gain_str = f"{gain:+.4f}" if gain is not None else "—"
-            se = e.get("se")
-            se_str = f"{se:.4f}" if se is not None and se >= 0 else "—"
             gate_v = e.get("gateVerdict", "—")
-            gate_g = e.get("gateGain", 0)
-            gate_g_str = f"{gate_g:+.4f}" if gate_g else "—"
             gate_s = e.get("gateSample", 0)
             gate_s_str = str(gate_s) if gate_s else "—"
+            gate_g = e.get("gateGain", 0)
+            gate_g_str = f"{gate_g:+.5f}" if gate_g else "—"
+            gate_se = e.get("gateSe", -1)
+            gate_se_str = f"{gate_se:.5f}" if gate_se >= 0 else "—"
             status = e.get("status", "unknown")
-            icon = "✓ admitted" if e.get("admitted") else ("— excluded" if status == "excluded" else "? insufficient")
-            lines.append(f"| {e['label']} | {e.get('sample', 0)} | {gain_str} | {se_str} | {ci_str} | {gate_v} | {gate_g_str} | {gate_s_str} | {icon} |")
+            icon = "✓ admitted" if e.get("gateAdmitted") else ("— excluded" if status == "excluded" else "? insufficient")
+            lines.append(f"| {e['label']} | {gate_s_str} | {gate_v} | {gate_g_str} | {gate_se_str} | {icon} |")
 
     lines.append("\n## Interpretation\n")
+    lines.append("Gate verdicts are from real calibration `comp_loss` rows, not synthetic walk-forward.\n")
+    lines.append("The blend admission gate requires > 2 SE log-loss gain over the blend without the candidate.\n")
     lines.append("On the **iid tape**, no engine should demonstrate real skill — the distribution")
     lines.append("is memoryless, so past rounds carry no information about the next.  Any engine")
     lines.append("that shows a positive gain here is likely overfitting; the blend gate's 2-SE")
-    lines.append("threshold controls the false-positive rate.\n")
+    lines.append("threshold controls the false-positive rate.  A small number of false-positive")
+    lines.append("admissions on iid data is expected and does not indicate real skill.\n")
     lines.append("On the **drift tape**, the distribution shifts at the midpoint.  Engines that")
     lines.append("adapt to recent history (rolling percentile, Chart Lab analogues) may show")
     lines.append("genuine skill in the second half.  The gate still requires > 2 SE to admit.\n")
